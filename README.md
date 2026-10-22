@@ -5,6 +5,8 @@ governed through an agent marketplace, identified through OpenID Federation with
 attested on SPIRE's word, and given sender-constrained tokens by PingFederate. A gateway and a PDP enforce every
 call, and Shared Signals carry lifecycle events within seconds.
 
+- [`ARCHITECTURE.md`](ARCHITECTURE.md): the rig on one page - a diagram, trust boundaries, who trusts what, and the
+  main flows (also as a Confluence-ready page in `docs/architecture/`).
 - [`demo/COMPONENTS.md`](demo/COMPONENTS.md): every component - what it is, what it does, why it matters.
 - [`demo/flows.md`](demo/flows.md): each objective, what proves it, and its flow as a sequence diagram, plus the
   parties and why each is needed.
@@ -333,6 +335,7 @@ shortcut and its production equivalent, including:
 |---|---|
 | `rig.sh`, `poc.env.example` | the entry point and its settings |
 | `AWS.md` | deploying the PoC on AWS (EKS, ECS) |
+| `ARCHITECTURE.md`, `docs/architecture/` | the architecture page, its diagram (SVG, PNG) and a Confluence-ready HTML version |
 | `spire/` | SPIRE server and agent, and their set-up |
 | `image/` | PingFederate's image build, with the module release (0.7.0) and its staged jars |
 | `demo/` | PingFederate's configuration (`up.sh`, `terraform/`, `vars*.env`, `docker-compose.license.yml`) and the PoC's services (`spire-workload/`, `gateway/`, `marketplace/`, `raidiam/`, `openbao/`) |

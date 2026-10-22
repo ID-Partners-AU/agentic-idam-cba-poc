@@ -1,0 +1,180 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 720" width="1240" height="720" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif">
+  <title>Agentic IDAM PoC - rig architecture</title>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#333333"/>
+    </marker>
+    <marker id="arrow-o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#FC6401"/>
+    </marker>
+    <style>
+      .t  { font-size: 13px; font-weight: 700; fill: #000000; }
+      .s  { font-size: 11px; fill: #333333; }
+      .l  { font-size: 10px; fill: #333333; }
+      .lo { font-size: 10px; fill: #B84800; font-weight: 600; }
+      .box { fill: #FFFFFF; stroke: #000000; stroke-width: 1.2; }
+      .ext { fill: #F1F1F1; stroke: #555555; stroke-width: 1.2; stroke-dasharray: 5 4; }
+      .pf  { fill: #FFE1CE; stroke: #FC6401; stroke-width: 2; }
+      .ln  { stroke: #333333; stroke-width: 1.4; fill: none; }
+      .lno { stroke: #FC6401; stroke-width: 2; fill: none; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1240" height="720" fill="#FFFFFF"/>
+
+  <!-- External parties -->
+  <rect class="ext" x="40" y="30" width="560" height="78" rx="4"/>
+  <text class="t" x="56" y="54">Raidiam · Trust Controller (CBA federation)</text>
+  <text class="s" x="56" y="74">Directory, admin API, authority and trust anchor. Holds statements, certified keys,</text>
+  <text class="s" x="56" y="90">roles and SPIFFE bindings; hosts and signs the Principal agents' Entity Configurations</text>
+
+  <rect class="ext" x="640" y="30" width="250" height="78" rx="4"/>
+  <text class="t" x="656" y="54">ngrok tunnel (PoC only)</text>
+  <text class="s" x="656" y="74">PingFederate's public issuer,</text>
+  <text class="s" x="656" y="90">PF_BASE_URL → localhost:9031</text>
+
+  <rect class="ext" x="930" y="30" width="270" height="78" rx="4"/>
+  <text class="t" x="946" y="54">Operator (browser)</text>
+  <text class="s" x="946" y="74">Opens the marketplace on :3000 and</text>
+  <text class="s" x="946" y="90">signs in to Raidiam through it</text>
+
+  <line class="ln" x1="600" y1="69" x2="638" y2="69" marker-end="url(#arrow)"/>
+  <text class="l" x="603" y="62">fetch</text>
+
+  <!-- Protected network boundary -->
+  <rect x="20" y="140" width="1200" height="480" rx="6" fill="none" stroke="#FC6401" stroke-width="1.5" stroke-dasharray="8 5"/>
+  <text x="40" y="608" font-size="12" font-weight="700" fill="#B84800">PROTECTED NETWORK · ONE DOCKER HOST</text>
+  <text class="s" x="306" y="608">Everything calls out to Raidiam; from outside, only PingFederate is reachable, through the tunnel</text>
+
+  <!-- Left column: control plane, keys, workload identity -->
+  <rect class="box" x="40" y="200" width="320" height="80" rx="4"/>
+  <text class="t" x="56" y="222">Agent marketplace  :3000</text>
+  <text class="s" x="56" y="241">Agent registry and control centre. Deploys a</text>
+  <text class="s" x="56" y="256">Principal version: Raidiam statement, bridge key,</text>
+  <text class="s" x="56" y="271">roles, SPIRE entry. MongoDB keeps the evidence</text>
+
+  <rect class="box" x="40" y="300" width="320" height="60" rx="4"/>
+  <text class="t" x="56" y="322">OpenBao · KMS stand-in  :8200</text>
+  <text class="s" x="56" y="342">Each agent's bridge key, in transit, never exported</text>
+
+  <rect class="box" x="40" y="380" width="320" height="52" rx="4"/>
+  <text class="t" x="56" y="401">SPIRE OIDC provider  :8445</text>
+  <text class="s" x="56" y="419">The trust domain's live JWT-SVID keys</text>
+
+  <rect class="box" x="40" y="452" width="320" height="88" rx="4"/>
+  <text class="t" x="56" y="474">SPIRE server + agent  :8081</text>
+  <text class="s" x="56" y="493">Trust domain example.org. Identifies each</text>
+  <text class="s" x="56" y="508">container by its label (app=…) and issues</text>
+  <text class="s" x="56" y="523">it a JWT-SVID through the Workload API</text>
+
+  <line class="ln" x1="210" y1="280" x2="210" y2="298" marker-end="url(#arrow)"/>
+  <text class="l" x="218" y="293">create key, CSR</text>
+
+  <!-- Middle column: PingFederate and the Principal agent -->
+  <rect class="pf" x="440" y="200" width="360" height="280" rx="4"/>
+  <text class="t" x="456" y="223">PingFederate 13.1.3  :9031</text>
+  <text class="s" x="456" y="241">with the OpenID Federation modules</text>
+  <g class="s">
+    <text x="456" y="270">• Token endpoint: attest_jwt_client_auth + DPoP</text>
+    <text x="456" y="295">• Co-hosted attester: JWT-SVID → client attestation</text>
+    <text x="456" y="320">• Federation: chains to the pinned anchor, Raidiam's</text>
+    <text x="466" y="335">policy, agents registered at first attested request</text>
+    <text x="456" y="360">• Bridge: private_key_jwt signed in OpenBao</text>
+    <text x="456" y="385">• Token exchange (RFC 8693): sub + act, per resource</text>
+    <text x="456" y="410">• Shared Signals transmitter (CAEP, RISC)</text>
+    <text x="456" y="435">• Its own Entity Configuration, vouched for by Raidiam</text>
+  </g>
+  <text class="lo" x="456" y="465">Authored by Terraform, booted from a config archive</text>
+
+  <rect class="box" x="440" y="510" width="360" height="70" rx="4"/>
+  <text class="t" x="456" y="532">Principal agent  (agent.py, one run per job)</text>
+  <text class="s" x="456" y="551">Federation managed: Raidiam hosts its identity</text>
+  <text class="s" x="456" y="566">Runs as app=agent-&lt;8&gt;, which SPIRE maps to its SPIFFE ID</text>
+
+  <!-- Arrows between left and middle -->
+  <line class="ln" x1="440" y1="330" x2="362" y2="330" marker-end="url(#arrow)"/>
+  <text class="l" x="368" y="312">sign bridge</text>
+  <text class="l" x="368" y="323">assertion</text>
+  <line class="ln" x1="440" y1="406" x2="362" y2="406" marker-end="url(#arrow)"/>
+  <text class="l" x="368" y="400">SPIRE keys</text>
+  <line class="ln" x1="440" y1="527" x2="362" y2="527" marker-end="url(#arrow)"/>
+  <text class="l" x="372" y="520">JWT-SVID</text>
+  <line class="lno" x1="560" y1="510" x2="560" y2="482" marker-end="url(#arrow-o)"/>
+  <text class="lo" x="568" y="500">attest, then token</text>
+
+  <!-- Arrows up to the external parties -->
+  <line class="ln" x1="150" y1="200" x2="150" y2="110" marker-end="url(#arrow)"/>
+  <text class="l" x="158" y="150">statements, certificates, roles</text>
+  <text class="l" x="158" y="162">(admin API, mutual TLS)</text>
+  <line class="ln" x1="470" y1="200" x2="470" y2="110" marker-end="url(#arrow)"/>
+  <text class="l" x="478" y="150">resolve chains, SPIFFE</text>
+  <text class="l" x="478" y="162">bindings, metadata policy</text>
+  <line class="ln" x1="700" y1="108" x2="700" y2="198" marker-end="url(#arrow)"/>
+  <text class="l" x="708" y="150">fetch PF's Entity</text>
+  <text class="l" x="708" y="162">Configuration</text>
+
+  <!-- Right column: agents' edge, sub-agents, resources, enforcement -->
+  <rect class="box" x="880" y="200" width="320" height="56" rx="4"/>
+  <text class="t" x="896" y="222">Agents' gateway · Kong  :8443</text>
+  <text class="s" x="896" y="242">/agent/&lt;name&gt;/: identity and MCP · /cb sign-in</text>
+
+  <rect class="box" x="880" y="272" width="155" height="78" rx="4"/>
+  <text class="t" x="892" y="293">accounts-agent</text>
+  <text class="s" x="892" y="312">Self managed: serves</text>
+  <text class="s" x="892" y="327">its own Entity</text>
+  <text class="s" x="892" y="342">Configuration</text>
+  <rect class="box" x="1045" y="272" width="155" height="78" rx="4"/>
+  <text class="t" x="1057" y="293">payments-agent</text>
+  <text class="s" x="1057" y="312">Self managed: serves</text>
+  <text class="s" x="1057" y="327">its own Entity</text>
+  <text class="s" x="1057" y="342">Configuration</text>
+
+  <rect class="box" x="880" y="380" width="155" height="60" rx="4"/>
+  <text class="t" x="892" y="402">Kong  :8446</text>
+  <text class="s" x="892" y="421">rs-accounts (MCP)</text>
+  <rect class="box" x="1045" y="380" width="155" height="60" rx="4"/>
+  <text class="t" x="1057" y="402">Kong  :8447</text>
+  <text class="s" x="1057" y="421">rs-payments (MCP)</text>
+
+  <rect class="box" x="880" y="462" width="320" height="48" rx="4"/>
+  <text class="t" x="896" y="482">coaz-pep · policy enforcement</text>
+  <text class="s" x="896" y="499">Token, DPoP, Shared Signals state; asks the PDP</text>
+
+  <rect class="box" x="880" y="528" width="320" height="52" rx="4"/>
+  <text class="t" x="896" y="549">PingAuthorize PDP + PAP</text>
+  <text class="s" x="896" y="567">AuthZEN decision per call (payments ≤ 1000)</text>
+
+  <line class="ln" x1="957" y1="256" x2="957" y2="270" marker-end="url(#arrow)"/>
+  <line class="ln" x1="1122" y1="256" x2="1122" y2="270" marker-end="url(#arrow)"/>
+  <line class="ln" x1="957" y1="350" x2="957" y2="378" marker-end="url(#arrow)"/>
+  <line class="ln" x1="1122" y1="350" x2="1122" y2="378" marker-end="url(#arrow)"/>
+  <line class="ln" x1="1040" y1="440" x2="1040" y2="460" marker-end="url(#arrow)"/>
+  <line class="ln" x1="1040" y1="510" x2="1040" y2="526" marker-end="url(#arrow)"/>
+  <polyline class="ln" points="1200,228 1212,228 1212,486 1202,486" marker-end="url(#arrow)"/>
+
+  <!-- The Principal's MCP calls: a bus up to the agents' gateway and the resource gateways -->
+  <polyline class="lno" points="800,560 860,560 860,228 878,228" marker-end="url(#arrow-o)"/>
+  <line class="lno" x1="860" y1="410" x2="878" y2="410" marker-end="url(#arrow-o)"/>
+  <text class="lo" x="805" y="578">MCP calls</text>
+
+  <!-- Sub-agents and the PEP back to PingFederate -->
+  <line class="ln" x1="880" y1="300" x2="802" y2="300" marker-end="url(#arrow)"/>
+  <text class="l" x="806" y="284">token</text>
+  <text class="l" x="806" y="295">exchange</text>
+  <line class="ln" x1="880" y1="470" x2="802" y2="470" marker-end="url(#arrow)"/>
+  <text class="l" x="806" y="455">SSF poll,</text>
+  <text class="l" x="806" y="465">JWKS</text>
+
+  <!-- Legend -->
+  <g transform="translate(40,648)">
+    <line class="lno" x1="0" y1="8" x2="34" y2="8" marker-end="url(#arrow-o)"/>
+    <text class="s" x="42" y="12">the Principal's path: attest, token, call</text>
+    <line class="ln" x1="290" y1="8" x2="324" y2="8" marker-end="url(#arrow)"/>
+    <text class="s" x="332" y="12">other calls (arrow = who calls whom)</text>
+    <rect class="pf" x="570" y="0" width="28" height="16" rx="2"/>
+    <text class="s" x="606" y="12">PingFederate with the delivered modules</text>
+    <rect class="ext" x="860" y="0" width="28" height="16" rx="2"/>
+    <text class="s" x="896" y="12">outside the protected network</text>
+    <text class="s" x="0" y="44">Ports are the Docker host's. In the PoC, the agents' and resources' identifiers are on host.docker.internal; PingFederate's issuer is the tunnel.</text>
+  </g>
+</svg>
