@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  How far a signed CIBA request object's exp and nbf may sit from now.
+
+  PingFederate 13.0.3 compiles these in at 720 minutes each and ships no file for them, so the
+  defaults are what a server has unless one is put here. FAPI-CIBA (over FAPI 1.0 Advanced) wants
+  60: the conformance plan sends a request object with exp seventy minutes out and one with nbf
+  seventy minutes back and expects both refused, and at 720 both are accepted.
+
+  Like the cipher list next to it, this is laid over the image AND carried in the archive (author.sh
+  stages it before the authoring server first starts, export.sh checks it is in the export): an
+  archive import writes the config store, and one without this file would write the defaults back.
+
+  default-polling-interval is what the token endpoint tells a poll-mode client (interval), and what
+  PingFederate's own ping-mode timer runs on when a client sets no ciba_polling_interval. Two
+  seconds keeps the plan's forty-odd modules from spending most of their time asleep.
+-->
+<c:config xmlns:c="http://www.sourceid.org/2004/05/config">
+    <c:item name="signed-request-maxFutureValidityInMinutes">60</c:item>
+    <c:item name="signed-request-nbfMaxPastInMinutes">60</c:item>
+    <c:item name="signed-request-secondsOfAllowedClockSkew">30</c:item>
+    <c:item name="default-polling-interval">2</c:item>
+</c:config>

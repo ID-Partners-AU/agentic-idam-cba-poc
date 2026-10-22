@@ -1,0 +1,12 @@
+pf-agentic-identity
+Copyright 2026 ID Partners Pty Ltd
+
+Licensed under the Apache License, Version 2.0.
+
+This product aggregates modules formerly published as the standalone repositories
+oidf-jose, client-attestation, openid-federation, and pf-integration (each Apache-2.0,
+their NOTICE files retained under {libs,servlets,plugins}/*/NOTICE), plus the pf-rar-paz-plugin,
+attestation-issuer, ssf, and gm-api components.
+
+It builds against the PingFederate SDK ("provided" scope): PingFederate is a product of
+Ping Identity Corporation and is NOT included in or distributed with this repository.

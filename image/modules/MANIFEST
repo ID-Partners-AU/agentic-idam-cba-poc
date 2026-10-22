@@ -1,0 +1,19 @@
+MANIFEST/2 profile=conformance built=2026-10-21T04:12:30Z commit=80750b264e46
+[servlets]
+3eb7c4bf048975ccee694e41221ff67a796873ca81bcdff5739653afd531cd42  oidf.jar
+b8835e5b832cc1d48e94e9aa6af2eb23fe20206a9e739e42ca66f33c54cfeb05  attestation-issuer-0.7.0.jar
+ce05bd32cbb10d1b94e565d7e51eeb78a1319162999dd01f754f4e6196dd1f56  ssf-0.7.0.jar
+[libs]
+a1457916ddff689dcdda46f99cc0f5381e62357ebc7c4a343098450ea9c27ac1  platform-0.7.0.jar
+ea8ec185ddbc02e59a368a1d9b43ecf756f850bd8235cfd83d7e4794898c880d  migrations-0.7.0.jar
+49e65d072b6e9d9cfbb57134f255207f492e91feb04bb41325a6241b7ab74633  platform-pf-0.7.0.jar
+ea983f39a84a1c161daa50f9f066888ef5df84d5b5ab25cd404f562c2f92e03f  oidf-jose-0.7.0.jar
+d54affdac6486ea5eea629c47ca08185d798e6ede5e5af7fe4515d12ecc8e91e  rs-validation-0.7.0.jar
+8cd21246011650ac3df16803426cd4366159a0168570ed8afdbea4d28a777197  rar-model-0.7.0.jar
+f64599fbfd1cf9a3173ff1366a13caf00283b59dbe4e0f2e28d9193be63eaaca  client-attestation-0.7.0.jar
+0ce8f6b92ca210d06aa51dc551fdb14dd07043bfae3f637372c3c9e4ab541ec6  openid-federation-0.7.0.jar
+262b0fc912cfe3c03a902e929d456e96e2aac7f5dfa3b1f2b7421dacaf255f36  agent-registry-0.7.0.jar
+c30b4cc2e32daba533dc449c3dc271272466620e8c18c19a2931b5b864c22984  device-instance-0.7.0.jar
+9cd4ff1f3482baf8ec561adacffeaa08f722a1e676bcf492547ae8be15040fdd  shared-signals-0.7.0.jar
+[plugins]
+e3f63447396a0379afd297f1857b339ec8e461c9055a827dd90a67453c66c110  pf.plugins.ciba-sim.jar

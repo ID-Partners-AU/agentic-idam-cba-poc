@@ -1,0 +1,282 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The filters the war assembler (build/war-assembler, run by assemble-pf-runtime-war.sh) registers in
+  pf-runtime.war's WEB-INF/web.xml, over PingFederate's own endpoints.
+
+  Annotation-mapped module classes (@WebServlet servlets like RegisteredClientsServlet, the SSF servlets)
+  map themselves once the jar is in WEB-INF/lib, because pf-runtime.war scans it. A filter that must run over
+  PF's OWN endpoints cannot be annotated - an annotation would bind it to the module's context only - so it is
+  declared here instead.
+
+  Each <filter> becomes one <filter> and one <filter-mapping>, appended before </web-app> in the order
+  written here; the container runs a request's filters in <filter-mapping> document order. The assembler
+  refuses the war unless, afterwards, every name below has exactly one of each with exactly these
+  url-patterns, every <order> holds, every path is one the stock web.xml serves (or a <path-exception>
+  says why not), and every <listener> is registered once. A stock web.xml that already registers a name
+  exactly as declared is left as it is, so the assembler's own output assembles to the same bytes.
+
+  Elements: <filter name class [async-supported="true"]> with <url-pattern> children; <order filter="A"
+  before="B">why</order>, the why being what a refusal prints; <path-exception path reason/>; <listener class/>;
+  <async path> with <stock-filter name reason/> and <stock-servlet name reason/> children. Nothing else is read.
+
+  <async path> (F-0360): the request chain at that exact path must allow async processing. Servlet 6.0
+  isAsyncSupported: "Async support will be disabled as soon as the request has passed a filter or servlet that does
+  not support async processing (either via the designated annotation or declaratively)." Each of our filters on the
+  chain says async-supported="true"; each stock filter on it is named with why it may be marked, and the assembler
+  inserts <async-supported>true</async-supported> into that stock <filter> after its <filter-class> (web-common's
+  filterType order) - the one edit it makes inside a stock element. It refuses a stock filter on the chain left
+  unnamed (a filter a new PingFederate adds fails the build), a name not on the chain, a stock filter that says
+  false, and a stock servlet already async-supported that a marked filter now reaches, unless a <stock-servlet>
+  names it with why that is safe. PingFederate 13.1.3's descriptor declares no servlet async-supported (2026-10-08).
+-->
+<war-filters version="1">
+
+  <!-- OidfCorrelation (CorrelationFilter, libs/platform-pf, O6) over every path, first of ours: puts the request's W3C
+       traceparent - the one it sent, if valid, else a generated one - on the thread for the chain and takes it off
+       afterwards, so every line our code writes for the request ends with ctx[tid=.. rid=.. traceparent=..] and every
+       call it makes out sends a child of it. It runs after PingFederate's own filters, which put httprequestid on the
+       thread first (the rig, 2026-10-06), and before every filter below, whose lines it is there for. -->
+  <filter name="OidfCorrelation" class="com.pingidentity.ps.oidf.platform.pf.log.CorrelationFilter" async-supported="true">
+    <url-pattern>/*</url-pattern>
+  </filter>
+  <path-exception path="/*" reason="OidfCorrelation wraps every request, whatever serves it: it only puts the request's traceparent on the thread"/>
+
+  <!-- OidfCorrelation is async-supported (F-0360): it is on /ssf/poll's chain, below. It only puts the request's
+       traceparent on the thread and takes it off after the chain; a held poll's answer carries the traceparent
+       LongPolls captured when it took the poll. -->
+  <!-- /ssf/poll (SsfPollServlet, asyncSupported = true): RFC 8936 §2.5's long poll - the transmitter "SHALL delay
+       responding until a SET is available or the timeout interval has elapsed" - is held off the request thread in
+       async mode, which every filter on the chain must allow (F-0360). On 13.1.3 the chain is PingFederate's twelve /*
+       filters and OidfCorrelation, read from the stock descriptor (sha256 955d503e...) and each filter's doFilter
+       (javap, 2026-10-08). Servlet 6.0 §2.3.3.3: with async, "the response will traverse (in reverse order) the same
+       filters (or filter chain) that were traversed on the way in", but a filter's code after chain.doFilter runs
+       when the servlet hands the poll over, not when it is answered. Each reason says why that is harmless here. -->
+  <async path="/ssf/poll">
+    <stock-filter name="RuntimeServiceSetFilter" reason="opens PingFederate's runtime service set for the request thread and closes it after the chain; the held poll's answer runs on our own executor and uses no PingFederate service"/>
+    <stock-filter name="proxyFilter" reason="wraps the request and response in HttpServletRequestWrapper and HttpServletResponseWrapper subclasses; startAsync on the wrapper reaches the container's request, and the answer is written to the response the async context holds"/>
+    <stock-filter name="threadContextCleanupFilter" reason="clears log4j's ThreadContext before the chain; nothing after it"/>
+    <stock-filter name="HttpRequestIdFilter" reason="puts httprequestid on the thread and request before the chain and clears the thread's copy after; the held answer's lines carry the captured traceparent instead"/>
+    <stock-filter name="HttpRequestHeaderFilter" reason="TRACE logging of the request headers before the chain and its logging state cleared after; the request is not read again"/>
+    <stock-filter name="HttpRequestParameterFilter" reason="TRACE logging of the request line and parameters before the chain and its logging state cleared after"/>
+    <stock-filter name="responseHeaderRuntimeFilter" reason="sets the configured response headers before the chain, so a held answer carries them as an immediate one does"/>
+    <stock-filter name="cross-origin-filter" reason="answers or decorates a CORS request before the chain; nothing after it"/>
+    <stock-filter name="HttpRequestStatisticsFilter" reason="times the request and records its status when the chain returns: a held poll is counted as ended when it is handed over, which only shortens PingFederate's own response-time metric for /ssf/poll"/>
+    <stock-filter name="ClientTlsDetailsFilter" reason="records the TLS version for PingFederate's audit before the chain; nothing after it"/>
+    <stock-filter name="executionContextFilter" reason="sets the runtime execution context for the request thread before the chain; the answer's thread does not read it"/>
+    <stock-filter name="servletRequestCleanupFilter" reason="runs PingFederate's request clean-up callbacks after the chain, before a held poll is answered; the poll servlet registers none and holds no PingFederate request state"/>
+  </async>
+
+  <!-- SsfLogoutSignal (LogoutEventFilter) over /idp/init_logout.openid: verifies the logout's id_token_hint and records
+       the sign-off as pending, under the SHA-256 of the RequestStateRef PingFederate hands on to /idp/startSLO.ping
+       (F-0401). It raises nothing: PingFederate has not signed anyone off yet. Order-independent. -->
+  <filter name="SsfLogoutSignal" class="com.pingidentity.ps.oidf.servlet.ssf.LogoutEventFilter">
+    <url-pattern>/idp/init_logout.openid</url-pattern>
+  </filter>
+
+  <!-- SsfLogoutConfirm (LogoutConfirmFilter) over *.ping, acting on /idp/startSLO.ping and
+       /idp/<ref>/resume/idp/startSLO.ping only (a path check first; every other .ping request passes straight through):
+       raises caep.session-revoked when the user confirms PingFederate's "Logout Confirmation" (consentGiven=true) or
+       PingFederate signs off without asking, and nothing on Cancel (F-0401). The resume path has the reference in its
+       middle, which no url-pattern can name, so the mapping is PingFederate's own extension. Order-independent. -->
+  <filter name="SsfLogoutConfirm" class="com.pingidentity.ps.oidf.servlet.ssf.LogoutConfirmFilter">
+    <url-pattern>*.ping</url-pattern>
+  </filter>
+
+  <!-- Fapi2Profile (Fapi2ProfileFilter): FAPI 2.0 Security Profile - a client assertion's aud must be this
+       server's issuer, as a string (§5.3.2.1), and a DPoP proof must be signed with PS256, ES256 or EdDSA
+       (§5.4.1). PF 13.1 accepts RS256 on a proof with no setting to narrow it, and its audience check is one
+       switch for the whole server. Registered always and OFF by default: it examines only the clients named
+       in OIDF_FAPI2_CLIENTS ("*" for all) and passes everything else through, because OIDC Core tells
+       clients to use the token endpoint URL, and a server with FAPI 2.0 clients usually has the other kind
+       too.
+
+       Mapped over every PF endpoint that authenticates a client by assertion or takes a DPoP proof. One the
+       list misses is one where the rule is silently not applied, so it errs long: PAR, token,
+       introspection, revocation, CIBA, device authorization (PF 13.1.3 authenticates a client there by
+       assertion too, F-0320), and UserInfo (the one resource PF serves itself). It must be mapped
+       before OidfAutoRegistration, ClientAttestationAuth and OidfFrontChannelAutoRegistration - see the
+       <order> rules below. -->
+  <filter name="Fapi2Profile" class="com.pingidentity.ps.oidf.servlet.fapi2.Fapi2ProfileFilter">
+    <url-pattern>/as/par.oauth2</url-pattern>
+    <url-pattern>/as/token.oauth2</url-pattern>
+    <url-pattern>/as/introspect.oauth2</url-pattern>
+    <url-pattern>/as/revoke_token.oauth2</url-pattern>
+    <url-pattern>/as/bc-auth.ciba</url-pattern>
+    <url-pattern>/as/device_authz.oauth2</url-pattern>
+    <url-pattern>/idp/userinfo.openid</url-pattern>
+  </filter>
+
+  <!-- FapiResourceServer (FapiResourceServerFilter) over /idp/userinfo.openid: FAPI 1.0 Baseline §6.2.1 - a
+       resource server echoes the client's x-fapi-interaction-id or mints a UUID (provision 11), and does not
+       accept an access token in the query (provision 3). UserInfo is the one resource PF serves itself and
+       it does neither; the FAPI-CIBA plan fails every positive module on the first and the happy path on the
+       second. Order-independent: a header before the chain, or a 400 instead of it. -->
+  <filter name="FapiResourceServer" class="com.pingidentity.ps.oidf.servlet.fapi1.FapiResourceServerFilter">
+    <url-pattern>/idp/userinfo.openid</url-pattern>
+  </filter>
+
+  <!-- OAuthErrorDescription (OAuthErrorDescriptionFilter) over the backchannel, token and PAR endpoints:
+       RFC 6749 §5.2 gives error_description a character set, and PF (seen on 13.0.3) puts jose4j's
+       explanation of a refused request object in it, Java-formatted date and its U+202F included. The filter
+       buffers a 4xx JSON body and brings the description inside the set. It only sees what runs after it, so
+       it comes before the servlet and the filters mapped below it. It is not outermost: PF's own /* filters
+       and Fapi2Profile run before it, and their refusals never pass through it. -->
+  <filter name="OAuthErrorDescription" class="com.pingidentity.ps.oidf.servlet.oauth.OAuthErrorDescriptionFilter">
+    <url-pattern>/as/bc-auth.ciba</url-pattern>
+    <url-pattern>/as/token.oauth2</url-pattern>
+    <url-pattern>/as/par.oauth2</url-pattern>
+  </filter>
+
+  <!-- OidfFrontChannelAutoRegistration (FrontChannelAutoRegistrationFilter) over the authorization and PAR
+       endpoints: OpenID Federation §12.1.1 automatic registration. An RP that has never registered here
+       sends its request with its Entity Identifier as client_id and a signed request object (or, at PAR, a
+       private_key_jwt assertion) as proof it holds its keys; the filter resolves its chain, verifies that
+       proof against the keys it publishes for openid_relying_party, and registers it before PF sees the
+       request. Refusals are JSON at PAR and a page - never a redirect - at the authorization endpoint
+       (§12.1.3). Mapped after Fapi2Profile and OAuthErrorDescription (the <order> rules below). -->
+  <filter name="OidfFrontChannelAutoRegistration" class="com.pingidentity.ps.oidf.servlet.clientregistration.FrontChannelAutoRegistrationFilter">
+    <url-pattern>/as/authorization.oauth2</url-pattern>
+    <url-pattern>/as/par.oauth2</url-pattern>
+  </filter>
+
+  <!-- OidfAutoRegistration (TokenEndpointAutoRegistrationFilter) over /as/token.oauth2: OpenID Federation
+       §12.1 automatic registration. An unknown federation client presenting its trust chain in its
+       client_assertion is materialised in PF's client store just in time, so the same request then
+       authenticates normally, and a federation client's registration is renewed as it nears its end
+       (§12.3). Fail-closed by default (OIDF_AUTO_REGISTRATION_FAIL_CLOSED); a current registration costs one
+       store read. The trust controller comes from OIDF_FEDERATION_TRUST_CONTROLLER_HOST at runtime
+       (FederationRuntimeConfig). Mapped before ClientAttestationAuth (the <order> rules below). -->
+  <filter name="OidfAutoRegistration" class="com.pingidentity.ps.oidf.servlet.clientregistration.TokenEndpointAutoRegistrationFilter">
+    <url-pattern>/as/token.oauth2</url-pattern>
+  </filter>
+
+  <!-- IdJagDetails (IdJagDetailsFilter) over /as/token.oauth2 (F-0325): a token exchange whose requested_token_type
+       is urn:ietf:params:oauth:token-type:id-jag and which carries authorization_details is refused 400
+       invalid_authorization_details. PingFederate 13.1.3 neither validates nor enriches those details and copies them
+       into the ID-JAG it signs, so neither the RAR processor, the attestation ceiling nor the PDP would see them.
+       Always on, for every client, in every profile; any other request passes untouched. Mapped before
+       ClientAttestationAuth (the <order> rules below). -->
+  <filter name="IdJagDetails" class="com.pingidentity.ps.oidf.servlet.clientregistration.IdJagDetailsFilter">
+    <url-pattern>/as/token.oauth2</url-pattern>
+  </filter>
+
+  <!-- IssuedDetailsBelt (IssuedDetailsBelt) over /as/token.oauth2: the response belt (plan item S4d, F-0032). For a
+       request whose attestation ClientAttestationAuth verified - the attribute it publishes - the token response is
+       held (up to 64 KiB) until its authorization_details, where RFC 9396 section 7 puts them, are known to be within
+       the attestation's, and replaced with 400 invalid_authorization_details when they are not; a larger success is
+       500, since it cannot be checked. Every other request passes untouched and unbuffered. The access-token mapping
+       criterion IssuedDetailsCriterion.withinCeiling holds the same details before the token is made; this is the
+       fallback for a mapping without it (docs/operator/issued-details.md). Mapped before ClientAttestationAuth (the
+       <order> rules below). -->
+  <filter name="IssuedDetailsBelt" class="com.pingidentity.ps.oidf.servlet.clientregistration.IssuedDetailsBelt">
+    <url-pattern>/as/token.oauth2</url-pattern>
+  </filter>
+
+  <!-- ClientAttestationAuth (ClientAttestationAuthFilter) over every PF endpoint that authenticates a client:
+       implements attest_jwt_client_auth (draft-ietf-oauth-attestation-based-client-auth). It verifies the
+       OAuth-Client-Attestation(+PoP) headers and forwards the request authenticated to PF via a bridge
+       private_key_jwt signed with THAT CLIENT'S key (OIDF_BRIDGE_SIGNER_BACKING + OIDF_BRIDGE_SIGNING_KEYS;
+       the superseded single-key OIDF_BRIDGE_PRIVATE_JWK is refused at startup rather than ignored). With no
+       bridge signing configured the filter refuses to start, unless OIDF_ATTESTATION_REQUIRE_BRIDGE_KEY=false
+       says the operator meant to run without it - in which case attestation headers pass through and PF
+       enforces each client's own configured authentication. The PoP aud is the OP issuer, and so is the
+       bridge assertion's - one string, typ client-authentication+jwt, at every endpoint.
+
+       Token, PAR (RFC 9126 §2.1: "Authenticate the client in the same way as at the token endpoint"), CIBA's
+       backchannel endpoint and the device authorization endpoint (RFC 8628 §3.1 applies RFC 6749 §3.2.1's
+       client authentication there) take authorization_details, and PF issues what PAR and CIBA stored whatever
+       the token request later says (U-0019, the rig, 2026-09-30; the device grant is taken to do the same,
+       U-0330). So at those four the filter grants authorize(requested, attestation, INHERIT) and forwards
+       THE GRANTED DETAILS in place of the client's; a signed request object at PAR and CIBA, which cannot be rewritten, must be within the
+       attestation's details as it stands. Introspection and revocation authenticate only. PF 13.1.3 accepted
+       the bridge assertion at all six (U-0020, the rig, 2026-09-30) and served CIBA at /as/bc-auth.ciba;x,
+       %2E and dot-segment spellings, which the container maps to this exact pattern (U-0094).
+
+       Over /as/authorization.oauth2 it verifies nothing - the front channel carries no attestation - and only
+       refuses, with an error page and never a redirect, authorization_details from a client with
+       attestation_required=true that did not come through PAR, where they would be held to nothing. -->
+  <filter name="ClientAttestationAuth" class="com.pingidentity.ps.oidf.servlet.clientregistration.ClientAttestationAuthFilter">
+    <url-pattern>/as/token.oauth2</url-pattern>
+    <url-pattern>/as/par.oauth2</url-pattern>
+    <url-pattern>/as/bc-auth.ciba</url-pattern>
+    <url-pattern>/as/device_authz.oauth2</url-pattern>
+    <url-pattern>/as/introspect.oauth2</url-pattern>
+    <url-pattern>/as/revoke_token.oauth2</url-pattern>
+    <url-pattern>/as/authorization.oauth2</url-pattern>
+  </filter>
+
+  <!-- AttestationMetadata (AttestationMetadataFilter) over PingFederate's own two discovery documents (plan item S-4,
+       F-0115). ABCA-10 section 6.1: an authorization server that offers a challenge endpoint and supports RFC 8414
+       metadata "MUST signal support for the challenge endpoint by including the metadata entry challenge_endpoint";
+       section 8 asks the same documents for attest_jwt_client_auth and its algorithm members. PingFederate 13.1.3 serves
+       both documents from its controller servlet (exact <servlet-mapping>s in the stock web.xml, verified 2026-10-01) and
+       has no setting for either, so the filter holds a 200 JSON document and adds the members the Entity Configuration's
+       two metadata blocks carry: PingFederate's own members first and unchanged, challenge_endpoint the authorization
+       server's, never the attester's. Anything else - another status, an encoding, a body it cannot parse - goes out as
+       it came, counted; with ATTESTATION_AUTH switched off it adds nothing. Order-independent: no other filter here maps
+       these paths, and PingFederate's noCacheFilter, mapped by servlet name, runs inside it. -->
+  <filter name="AttestationMetadata" class="com.pingidentity.ps.oidf.servlet.oauth.AttestationMetadataFilter">
+    <url-pattern>/.well-known/openid-configuration</url-pattern>
+    <url-pattern>/.well-known/oauth-authorization-server</url-pattern>
+  </filter>
+
+  <!-- The order is load-bearing, not cosmetic. The first four are the shell assembler's three checks (the
+       last was one check of two pairs); the next two came with ClientAttestationAuth's wider mapping, and the last with
+       the response belt. -->
+  <order filter="OidfAutoRegistration" before="ClientAttestationAuth">
+    ClientAttestationAuth replaces client_assertion with a bridge assertion that carries no trust_chain
+    header, so if it ran first automatic registration would find nothing to register from, and §12.1 could
+    never fire for the attestation clients it exists to serve.
+  </order>
+  <order filter="Fapi2Profile" before="OidfAutoRegistration">
+    an assertion FAPI 2.0 refuses must not first trigger a registration, and must be judged before
+    ClientAttestationAuth replaces it.
+  </order>
+  <order filter="Fapi2Profile" before="OidfFrontChannelAutoRegistration">
+    a PAR assertion FAPI 2.0 refuses must not register a client.
+  </order>
+  <order filter="OAuthErrorDescription" before="OidfFrontChannelAutoRegistration">
+    a PAR refusal from front-channel registration must pass through the description sanitiser, which wraps
+    the response and so has to sit outside it.
+  </order>
+  <order filter="Fapi2Profile" before="ClientAttestationAuth">
+    FAPI 2.0 judges the client's own assertion and DPoP proof at PAR, token, CIBA, introspection and
+    revocation; ClientAttestationAuth replaces the assertion with a bridge assertion this server signed, so
+    run after it FAPI 2.0 would only ever see that one.
+  </order>
+  <order filter="OidfFrontChannelAutoRegistration" before="ClientAttestationAuth">
+    at the authorization and PAR endpoints ClientAttestationAuth reads the client's attestation_required from
+    PF's client store, and front-channel registration is what puts a federation RP there with its
+    attestation_required; run first, ClientAttestationAuth would find no client and let a first request's
+    authorization_details through unheld.
+  </order>
+  <order filter="IssuedDetailsBelt" before="ClientAttestationAuth">
+    the belt must hold every token response written for a request ClientAttestationAuth verified: mapped outside that
+    filter, nothing it hands the request to - PingFederate, or a filter mapped after it - writes a response the belt
+    does not see.
+  </order>
+  <order filter="IdJagDetails" before="ClientAttestationAuth">
+    an ID-JAG token exchange must be refused on the client's own authorization_details; ClientAttestationAuth forwards
+    the details it grants in place of the client's and spends the attestation's PoP on a request this filter refuses.
+  </order>
+  <order filter="OidfCorrelation" before="Fapi2Profile">
+    every line the filters mapped after it write carries the request's traceparent only once OidfCorrelation has put it there.
+  </order>
+  <order filter="OidfCorrelation" before="OidfFrontChannelAutoRegistration">
+    front-channel registration's lines and its outbound fetches carry the request's trace only once it is on the thread.
+  </order>
+  <order filter="OidfCorrelation" before="ClientAttestationAuth">
+    the attestation filter's lines and refusals carry the request's trace only once it is on the thread.
+  </order>
+
+  <!-- The lifecycle listener (plan item F-2, libs/platform-pf, "lifecycle"): marks the webapp's copy of platform
+       as the webapp's, logs the start-up audit banner once, and at undeploy closes that copy's executors, MXBean
+       and Redis pools. Registered here by name, not by a @WebListener annotation. PingFederate 13.1.3 would run
+       an annotated one from WEB-INF/lib and not from server/default/deploy (U-0024, a probe on the rig,
+       2026-09-28), but the same jars sit in both places, and the engine's loader must never run it: a named
+       entry is one registration the assembler checks, in this war only, whatever a container scans, and a
+       consumer's war with metadata-complete="true" would silently drop an annotated one. The listener also
+       checks that its copy of platform is the war's own before it touches it. -->
+  <listener class="com.pingidentity.ps.oidf.platform.pf.lifecycle.LifecycleListener"/>
+
+</war-filters>

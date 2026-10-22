@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The TLS cipher suites PingFederate will negotiate - the stock list with everything CBC and everything
+  static-ECDH taken out.
+
+  FAPI 2.0 points at BCP 195 for TLS 1.2, and the conformance suite does not take the server's word for
+  it: it opens its own handshakes offering every suite that is NOT recommended and fails if the server
+  picks one. The stock list offers eight it will pick (the four ECDHE CBC suites, and all eight ECDH
+  ones, four of them CBC). What is left is forward-secret and AEAD, which is the whole of the rule.
+
+  It has to be in TWO places, and either alone fails in a way that looks fine:
+
+    over the image (compose-context.sh -> overlay/config-store/)
+        Jetty builds its TLS listener from the file on disk when PingFederate starts, and the config
+        archive is imported after that. A volume-less service starts every boot from the image, so
+        with the file only in the archive the listener always comes up with the stock list - found by
+        probing the built image, which still took two CBC suites with a correct archive inside it.
+
+    in the archive (author.sh stages it before export.sh runs; export.sh refuses an archive without it)
+        A config archive carries config-store/, so an import would otherwise put the stock list back
+        on disk, and the next restart of a PingFederate that does keep its disk would pick it up.
+-->
+<con:config xmlns:con="http://www.sourceid.org/2004/05/config">
+    <con:map name="enabled-cipher-suites">
+        <con:item name="TLS_AES_256_GCM_SHA384"/>
+        <con:item name="TLS_AES_128_GCM_SHA256"/>
+
+        <con:item name="TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"/>
+        <con:item name="TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"/>
+
+        <con:item name="TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"/>
+        <con:item name="TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"/>
+
+        <con:item name="TLS_EMPTY_RENEGOTIATION_INFO_SCSV"/>
+    </con:map>
+</con:config>

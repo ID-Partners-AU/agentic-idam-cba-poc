@@ -1,0 +1,40 @@
+# The repo's PingFederate, running locally. Built from .context/ (compose-context.sh: this repo's
+# build/pingfederate/ image build plus the config archive export.sh produced), configured by
+# .context/vars.env (rendered from vars.env by up.sh), licensed by your own DevOps credentials.
+#
+#   ./up.sh                       does everything, including this
+#   docker compose up -d --build  once .context/ exists
+#   docker compose down           stops it; the archive and keys stay for the next start
+#
+# Ports are bound to 127.0.0.1: the archive's admin password is in .author.env and this is not a rig
+# to expose. 9031 is PF's HTTPS runtime (the issuer), 9080 an HTTP runtime listener for anything that
+# terminates TLS itself (vars.env turns it on: the image leaves it off), 9999 the admin console and API.
+# The healthcheck is the image's own (build/pingfederate/pf-healthcheck.sh). PF_PORT_* move the host side when another PF
+# already has them; up.sh then makes the issuer match. PF_RIG_NAME names the container and the image, so
+# a second rig - another checkout's, say - runs beside the first instead of replacing it.
+services:
+  pingfederate:
+    build:
+      context: .context
+      # The conformance profile: the CIBA simulator is in the image, and the assembler refuses a
+      # modules/ staged for production. up.sh stages with the same profile; compose-context.sh checks.
+      args:
+        STAGING_PROFILE: conformance
+    image: ${PF_RIG_NAME:-pf-agentic-identity}/pingfederate:local
+    container_name: ${PF_RIG_NAME:-pf-agentic-identity}
+    ports:
+      - "127.0.0.1:${PF_PORT_HTTPS:-9031}:9031"
+      - "127.0.0.1:${PF_PORT_HTTP:-9080}:9080"
+      - "127.0.0.1:${PF_PORT_ADMIN:-9999}:9999"
+    # Both files are required in practice; `required: false` only lets `docker compose config` run before
+    # up.sh has rendered the first, and PF then fails at boot with a clear licence or issuer error.
+    env_file:
+      - path: .context/vars.env
+        required: false
+      # PING_IDENTITY_DEVOPS_USER / PING_IDENTITY_DEVOPS_KEY - yours, never in git. up.sh checks it exists.
+      - path: ${PING_DEVOPS_CONFIG:-${HOME}/.pingidentity/config}
+        required: false
+    # The image accepts no licence agreement for anyone; vars.env accepts it too, and this keeps the rig's
+    # acceptance where the compose file shows it.
+    environment:
+      PING_IDENTITY_ACCEPT_EULA: "YES"

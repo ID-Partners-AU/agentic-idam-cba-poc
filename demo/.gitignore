@@ -1,0 +1,32 @@
+# Everything here that is a secret, or is derived from one, stays out of git.
+#
+#   .author.env    the authoring PF's admin password (up.sh generates it; it becomes the archive's)
+#   keys/          the suite clients' PRIVATE JWKs (gen-keys.sh). Test keys are still keys: the
+#                  secrets-guard workflow does not grade intent, and neither does anyone who finds one
+#                  in a repository, private or public (this file is also the public tree's
+#                  demo/.gitignore).
+#   secrets.env    the generated test-user password and SSF introspection client secret
+#   data*.zip      the PF configArchive. A PLAIN ZIP that CONTAINS pf.jwk, the system keys and the
+#                  admin password hash - see the image build's .gitignore for how that was learned.
+#   overlay/       pf.jwk + pingfederate-system-keys.xml lifted out of that archive
+#   suite/*.json   suite configurations rendered from suite/*.template.json WITH the private keys in
+.author.env
+keys/
+# A PingFederate licence (PF_LICENSE_FILE) is Ping Identity's and yours: never in git, wherever you keep it.
+*.lic
+secrets.env
+data*.zip
+overlay/
+suite/*.json
+!suite/*.template.json
+
+# Derived.
+.context/
+.rar-principal/
+terraform/.terraform/
+terraform/terraform.tfstate*
+.key-rotation/
+
+# The licensed conformance driver's plan output and PingFederate logs (tools/ci/licensed-conformance.sh).
+out/
+spire-workload/__pycache__/

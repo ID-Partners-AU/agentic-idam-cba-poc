@@ -1,0 +1,425 @@
+# The SPIRE workload against the raidiam rig (PF_PROFILE=raidiam ../up.sh). One service, three flows:
+#
+#   docker compose run --rm workload                                       # AUTH_MODE=attestation (default)
+#   docker compose run --rm -e AUTH_MODE=federation workload               # trust chain in the client assertion
+#   docker compose run --rm -e AUTH_MODE=federation-discovery workload     # PingFederate resolves the chain
+#
+# It needs a running SPIRE agent whose Workload API socket is in the named volume SPIRE_SOCKETS_VOLUME (default
+# <POC_NAME>-spire-agent-sockets: the agent of ../../spire), and a registration entry selecting
+# this container (docker:label:app:my-workload -> spiffe://example.org/my-workload). The federation flows need
+# ENTITY_KEY_FILE's key certified by Raidiam for ENTITY_ID (see ../raidiam/README.md); the attestation flow needs
+# neither.
+# The PoC's services; their Docker names follow POC_NAME (poc.env), so this never collides with another copy.
+name: ${POC_NAME:-agentic-poc}
+
+services:
+  workload:
+    build: .
+    restart: "no"
+    labels:
+      app: my-workload
+    environment:
+      # The authorisation server comes from the Raidiam directory. Its Issuer is the rig's PF_BASE_URL; this
+      # container reaches PingFederate on the Docker host instead.
+      DIRECTORY_URL: ${DIRECTORY_URL:-https://data.directory.cba.raidiam.io}
+      AUTHORISATION_SERVER_ID: ${AUTHORISATION_SERVER_ID:?AUTHORISATION_SERVER_ID is not set - see poc.env}
+      ISSUER_HOST_OVERRIDE: host.docker.internal:${PF_PORT_HTTPS:-9031}
+      AUTH_MODE: ${AUTH_MODE:-attestation}
+      # The federation flows: the workload's Entity Identifier (the ClientId on its Raidiam software statement),
+      # its key, its superior and the anchor PingFederate pins.
+      ENTITY_ID: ${ENTITY_ID:-https://localhost/agent/my-workload}
+      ENTITY_KEY_FILE: /keys/entity.jwk
+      AUTHORITY_HINT: ${AUTHORITY_HINT:?AUTHORITY_HINT is not set - see poc.env}
+      TRUST_ANCHOR: ${TRUST_ANCHOR:?TRUST_ANCHOR is not set - see poc.env}
+      # The attestation flow: what the instance asks for, held to the client's attestation_entitlement ceiling.
+      SPIRE_SOCKET: /run/spire/sockets/agent.sock
+      PROOF_MODE: pop
+      AUTHORIZATION_DETAILS: '[{"type":"sales_agent","sales_regions":["EMEA"]}]'
+      # PingFederate's runtime certificate is issued by the rig's own CA (../gen-keys.sh).
+      PF_CA_FILE: /certs/pf-runtime-tls-ca.crt
+      SSL_CERT_FILE: /certs/pf-runtime-tls-ca.crt
+    volumes:
+      - ../keys/pf-runtime-tls-ca.crt:/certs/pf-runtime-tls-ca.crt:ro
+      - spire-sockets:/run/spire/sockets
+      - ./keys:/keys
+
+  # An instance of the federated attested client: the attestation flow under its SPIFFE ID, which the attester takes
+  # from Raidiam's statement about the client, not from PingFederate's clients.
+  #   docker compose run --rm attested-workload
+  attested-workload:
+    extends: workload
+    labels:
+      app: spire-client
+    environment:
+      AUTH_MODE: attestation
+      # Optional: name the client at mint; the attester still checks the SVID against that client's bindings.
+      ATTESTATION_CLIENT_ID: ${ATTESTED_CLIENT_ID:-https://host.docker.internal:8443/agent/spire-client}
+      # The attester signs as PingFederate and wants the JWT-SVID addressed to its issuer, from its discovery document.
+
+  # SPIRE's OIDC Discovery Provider (spire-oidc.conf): the trust domain's live JWT-SVID keys at
+  # https://host.docker.internal:8445/keys, the bundle_url the federated client's bindings name. Needs a SPIRE entry
+  # spiffe://example.org/spire-oidc <- docker:label:app:spire-oidc, and its certificate from the rig's CA
+  # (keys/raidiam/spire-oidc/, see ../raidiam/README.md).
+  #   docker compose up -d spire-oidc
+  spire-oidc:
+    image: ghcr.io/spiffe/oidc-discovery-provider:1.9.0
+    command: ["-config", "/run/spire-oidc/oidc.conf"]
+    restart: unless-stopped
+    labels:
+      app: spire-oidc
+    ports:
+      - "8445:8445"
+    volumes:
+      - ./spire-oidc.conf:/run/spire-oidc/oidc.conf:ro
+      - ../keys/raidiam/spire-oidc/tls.crt:/run/spire-oidc/tls.crt:ro
+      - ../keys/raidiam/spire-oidc/tls.key:/run/spire-oidc/tls.key:ro
+      - spire-sockets:/run/spire/sockets
+
+  # The agent-r flow (../raidiam/README.md, "The agent-r flow"): an agent that is handed only its identifier - a
+  # Principal version the marketplace deployed, hosted by Raidiam - gets this copy attested on SPIRE's word by
+  # PingFederate's attester, reads its capabilities and finds a resource through the federation, and calls it with a
+  # token from PingFederate, which registers it from Raidiam at its first. Needs spire-oidc and rs-accounts up, and
+  # PingFederate started with RAIDIAM_RESOURCE_ID. The container's label is the version's workload (deploy.slot).
+  #   ATTESTED_CLIENT_ID=<its entity id> docker compose run --rm -l app=<its workload> agent [list-accounts | get-balance]
+  agent:
+    build: .
+    restart: "no"
+    entrypoint: ["python", "agent.py"]
+    command: []
+    labels:
+      app: spire-client
+    environment:
+      AGENT_ID: ${ATTESTED_CLIENT_ID:-}
+      # PingFederate's issuer, for the probes (probe.py) - the agent itself finds its authorisation server in Raidiam.
+      PF_BASE_URL: ${PF_BASE_URL:?PF_BASE_URL is not set - see poc.env}
+      AUTHORITY: ${AUTHORITY_HINT:?AUTHORITY_HINT is not set - see poc.env}
+      TRUST_ANCHOR: ${TRUST_ANCHOR:?TRUST_ANCHOR is not set - see poc.env}
+      TRUST_ANCHOR_ENV_FILE: /fed/vars.raidiam.env
+      TRUST_ANCHOR_JWKS: '${TRUST_ANCHOR_JWKS:?TRUST_ANCHOR_JWKS is not set - see poc.env}'
+      # The network's own resources, which Raidiam cannot reach and so does not list.
+      # ...and the agents it may call (agents calling agents), which Raidiam cannot list either.
+      RESOURCE_IDS: ${RAIDIAM_RESOURCE_ID:-https://host.docker.internal:8446},${RAIDIAM_PAYMENTS_RESOURCE_ID:-https://host.docker.internal:8447},${RAIDIAM_PROVIDER_ID:-https://host.docker.internal:8443}/agent/accounts-agent,${RAIDIAM_PROVIDER_ID:-https://host.docker.internal:8443}/agent/payments-agent
+      INVOICE_AMOUNT: ${INVOICE_AMOUNT:-420}
+      DIRECTORY_URL: ${DIRECTORY_URL:-https://data.directory.cba.raidiam.io}
+      AUTHORISATION_SERVER_ID: ${AUTHORISATION_SERVER_ID:?AUTHORISATION_SERVER_ID is not set - see poc.env}
+      ISSUER_HOST_OVERRIDE: host.docker.internal:${PF_PORT_HTTPS:-9031}
+      SPIRE_SOCKET: /run/spire/sockets/agent.sock
+      INSTANCE_KEY_FILE: /state/instance.jwk
+      PF_CA_FILE: /certs/pf-runtime-tls-ca.crt
+    volumes:
+      - ../keys/pf-runtime-tls-ca.crt:/certs/pf-runtime-tls-ca.crt:ro
+      - ../vars.raidiam.env:/fed/vars.raidiam.env:ro
+      - spire-sockets:/run/spire/sockets
+      - agent-state:/state
+
+  # The agent-r flow's resource: an MCP server in the protected network, a federation entity of its own (its own
+  # Raidiam software statement, RAIDIAM_RESOURCE_ID; key from ../raidiam/resource.sh), protected by PingFederate.
+  #   docker compose up -d rs-accounts
+  #
+  # It sits behind the gateway (below): the gateway listens at its identifier, https://host.docker.internal:8446, and
+  # this serves plain HTTP inside the compose network only. It still makes its own checks - token, federation
+  # membership, capability - should anything reach it past the gateway.
+  rs-accounts:
+    build: .
+    command: ["python", "rs_accounts.py"]
+    restart: unless-stopped
+    environment:
+      RESOURCE_ID: ${RAIDIAM_RESOURCE_ID:-https://host.docker.internal:8446}
+      RESOURCE_KEY_FILE: /keys/entity.private.jwk.json
+      AUTHORITY_HINT: ${AUTHORITY_HINT:?AUTHORITY_HINT is not set - see poc.env}
+      TRUST_ANCHOR: ${TRUST_ANCHOR:?TRUST_ANCHOR is not set - see poc.env}
+      TRUST_ANCHOR_ENV_FILE: /fed/vars.raidiam.env
+      TRUST_ANCHOR_JWKS: '${TRUST_ANCHOR_JWKS:?TRUST_ANCHOR_JWKS is not set - see poc.env}'
+      DIRECTORY_URL: ${DIRECTORY_URL:-https://data.directory.cba.raidiam.io}
+      AUTHORISATION_SERVER_ID: ${AUTHORISATION_SERVER_ID:?AUTHORISATION_SERVER_ID is not set - see poc.env}
+      ISSUER_HOST_OVERRIDE: host.docker.internal:${PF_PORT_HTTPS:-9031}
+      REQUIRED_CAPABILITY: accounts_read
+      PF_CA_FILE: /certs/pf-runtime-tls-ca.crt
+      RESOURCE_LISTEN_PORT: "8446"
+      # The PEP reads tools/list from here by its compose name; the gateway rewrites Host to rs-accounts.
+      RESOURCE_ALLOWED_HOSTS: rs-accounts:8446,rs-accounts
+    volumes:
+      - ../keys/pf-runtime-tls-ca.crt:/certs/pf-runtime-tls-ca.crt:ro
+      - ../vars.raidiam.env:/fed/vars.raidiam.env:ro
+      - ../keys/raidiam/rs-accounts:/keys:ro
+
+  # rs-payments: the same server, RESOURCE_KIND=payments (pay_invoice, payment_initiation), behind gateway-payments at
+  # https://host.docker.internal:8447. Its own Raidiam software statement and ApiResource; keys RESOURCE=rs-payments.
+  rs-payments:
+    build: .
+    command: ["python", "rs_accounts.py"]
+    restart: unless-stopped
+    environment:
+      RESOURCE_KIND: payments
+      RESOURCE_ID: ${RAIDIAM_PAYMENTS_RESOURCE_ID:-https://host.docker.internal:8447}
+      RESOURCE_KEY_FILE: /keys/entity.private.jwk.json
+      AUTHORITY_HINT: ${AUTHORITY_HINT:?AUTHORITY_HINT is not set - see poc.env}
+      TRUST_ANCHOR: ${TRUST_ANCHOR:?TRUST_ANCHOR is not set - see poc.env}
+      TRUST_ANCHOR_ENV_FILE: /fed/vars.raidiam.env
+      TRUST_ANCHOR_JWKS: '${TRUST_ANCHOR_JWKS:?TRUST_ANCHOR_JWKS is not set - see poc.env}'
+      DIRECTORY_URL: ${DIRECTORY_URL:-https://data.directory.cba.raidiam.io}
+      AUTHORISATION_SERVER_ID: ${AUTHORISATION_SERVER_ID:?AUTHORISATION_SERVER_ID is not set - see poc.env}
+      ISSUER_HOST_OVERRIDE: host.docker.internal:${PF_PORT_HTTPS:-9031}
+      PF_CA_FILE: /certs/pf-runtime-tls-ca.crt
+      RESOURCE_LISTEN_PORT: "8446"
+      RESOURCE_ALLOWED_HOSTS: rs-payments:8446,rs-payments
+    volumes:
+      - ../keys/pf-runtime-tls-ca.crt:/certs/pf-runtime-tls-ca.crt:ro
+      - ../vars.raidiam.env:/fed/vars.raidiam.env:ro
+      - ../keys/raidiam/rs-payments:/keys:ro
+
+  # The sub-agents (sub_agent.py): MCP servers other agents call, behind gateway-agents at <origin>/agent/<name>/mcp/v1,
+  # each serving its own Entity Configuration and resource metadata at its identifier - no provider hosts them. Each
+  # exchanges its caller's token (RFC 8693) for one at its resource and calls it, under its own SPIRE identity:
+  # spiffe://example.org/<name> <- docker:label:app:<name>. Their keys: ../keys/raidiam/agents/<name>/.
+  accounts-agent:
+    build: .
+    command: ["python", "sub_agent.py"]
+    restart: unless-stopped
+    labels:
+      app: accounts-agent
+    environment: &sub-agent-env
+      AGENT_KIND: accounts
+      AGENT_ID: ${RAIDIAM_PROVIDER_ID:-https://host.docker.internal:8443}/agent/accounts-agent
+      AGENT_CAPABILITY: accounts_read
+      DOWNSTREAM_RESOURCE: ${RAIDIAM_RESOURCE_ID:-https://host.docker.internal:8446}
+      AUTHORISATION_SERVER: ${PF_BASE_URL:?PF_BASE_URL is not set - see poc.env}
+      AUTHORITY_HINT: ${AUTHORITY_HINT:?AUTHORITY_HINT is not set - see poc.env}
+      ENTITY_KEY_FILE: /agent-keys/entity.private.jwk.json
+      BRIDGE_JWKS_FILE: /agent-keys/bridge.public.jwks.json
+      ISSUER_HOST_OVERRIDE: host.docker.internal:${PF_PORT_HTTPS:-9031}
+      PF_CA_FILE: /certs/pf-runtime-tls-ca.crt
+      SPIRE_SOCKET: /run/spire/sockets/agent.sock
+      INSTANCE_KEY_FILE: /state/instance.jwk
+      LISTEN_PORT: "8090"
+      AGENT_ALLOWED_HOSTS: accounts-agent:8090,accounts-agent
+    volumes:
+      - ../keys/pf-runtime-tls-ca.crt:/certs/pf-runtime-tls-ca.crt:ro
+      - spire-sockets:/run/spire/sockets
+      - accounts-agent-state:/state
+      - ../keys/raidiam/agents/accounts-agent:/agent-keys:ro
+
+  payments-agent:
+    build: .
+    command: ["python", "sub_agent.py"]
+    restart: unless-stopped
+    labels:
+      app: payments-agent
+    environment:
+      <<: *sub-agent-env
+      AGENT_KIND: payments
+      AGENT_ID: ${RAIDIAM_PROVIDER_ID:-https://host.docker.internal:8443}/agent/payments-agent
+      AGENT_CAPABILITY: payment_initiation
+      DOWNSTREAM_RESOURCE: ${RAIDIAM_PAYMENTS_RESOURCE_ID:-https://host.docker.internal:8447}
+      AGENT_ALLOWED_HOSTS: payments-agent:8090,payments-agent
+    volumes:
+      - ../keys/pf-runtime-tls-ca.crt:/certs/pf-runtime-tls-ca.crt:ro
+      - spire-sockets:/run/spire/sockets
+      - payments-agent-state:/state
+      - ../keys/raidiam/agents/payments-agent:/agent-keys:ro
+
+  # Kong as the agents' edge, https://host.docker.internal:8443: each sub-agent's identity (its own Entity
+  # Configuration) and its MCP through coaz-pep; /cb to the marketplace.
+  gateway-agents:
+    build: ../gateway/kong
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+    environment:
+      KONG_TEMPLATE: agents.yml.template
+      KONG_PROXY_LISTEN: "0.0.0.0:8443 ssl"
+      PROVIDER_ID: ${RAIDIAM_PROVIDER_ID:-https://host.docker.internal:8443}
+      COAZ_URL: http://coaz-pep:9192
+    volumes:
+      - ../keys/raidiam/attested-client/entity-host-tls.crt:/tls/tls.crt:ro
+      - ../keys/raidiam/attested-client/entity-host-tls.key:/tls/tls.key:ro
+    depends_on: [accounts-agent, payments-agent, coaz-pep]
+
+  # Kong in front of rs-payments, at https://host.docker.internal:8447.
+  gateway-payments:
+    build: ../gateway/kong
+    restart: unless-stopped
+    ports:
+      - "8447:8447"
+    environment:
+      KONG_PROXY_LISTEN: "0.0.0.0:8447 ssl"
+      RESOURCE_ID: ${RAIDIAM_PAYMENTS_RESOURCE_ID:-https://host.docker.internal:8447}
+      RESOURCE_URL: http://rs-payments:8446
+      RESOURCE_LABEL: rs-payments MCP
+      COAZ_URL: http://coaz-pep:9192
+    volumes:
+      - ../keys/raidiam/attested-client/entity-host-tls.crt:/tls/tls.crt:ro
+      - ../keys/raidiam/attested-client/entity-host-tls.key:/tls/tls.key:ro
+    depends_on: [rs-payments, coaz-pep]
+
+  # The gateway in front of rs-accounts (../gateway/README.md): Kong, at the resource's identifier, asks coaz-pep about
+  # every MCP request (its HTTP check API); only then does a call reach the resource.
+  gateway:
+    build: ../gateway/kong
+    restart: unless-stopped
+    ports:
+      - "8446:8446"
+    environment:
+      RESOURCE_ID: ${RAIDIAM_RESOURCE_ID:-https://host.docker.internal:8446}
+      RESOURCE_URL: http://rs-accounts:8446
+      COAZ_URL: http://coaz-pep:9192
+    volumes:
+      - ../keys/raidiam/attested-client/entity-host-tls.crt:/tls/tls.crt:ro
+      - ../keys/raidiam/attested-client/entity-host-tls.key:/tls/tls.key:ro
+    depends_on: [rs-accounts, coaz-pep]
+
+  # The policy enforcement point (vendored from idp-agentic-demo): Kong's plugin asks its HTTP check API. It verifies the
+  # access token (PingFederate's JWKS, fetched inside the network), then for an MCP tools/call reads the tool's
+  # x-coaz-mapping and asks the PDP an AuthZEN question. Fails closed.
+  coaz-pep:
+    build: ../gateway/coaz-pep
+    restart: unless-stopped
+    environment:
+      AUTHZEN_URL: http://pingauthorize:1080
+      AUTHZEN_API_KEY: rig-authzen-dev-key
+      TOKEN_JWKS_URL: https://host.docker.internal:${PF_PORT_HTTPS:-9031}/pf/JWKS
+      TOKEN_ISSUER: ${PF_BASE_URL:?PF_BASE_URL is not set - see poc.env}
+      TOKEN_AUDIENCE: ${RAIDIAM_RESOURCE_ID:-https://host.docker.internal:8446}
+      TOKEN_CA_FILE: /certs/pf-runtime-tls-ca.crt
+      # Shared Signals: a poll stream from PingFederate's transmitter, as rig-pep-ssf-receiver (../terraform/ssf-pep.tf).
+      # A session-revoked or account-disabled about an agent refuses its tokens here within a poll.
+      SSF_CONFIGURATION_URL: https://host.docker.internal:${PF_PORT_HTTPS:-9031}/.well-known/ssf-configuration
+      SSF_CONNECT_BASE: https://host.docker.internal:${PF_PORT_HTTPS:-9031}
+      SSF_TOKEN_ENDPOINT: https://host.docker.internal:${PF_PORT_HTTPS:-9031}/as/token.oauth2
+      SSF_CLIENT_ID: rig-pep-ssf-receiver
+      SSF_CLIENT_KEY_FILE: /keys/pep-ssf.private.jwk.json
+      SSF_POLL_SECONDS: "2"
+    volumes:
+      - ../keys/pf-runtime-tls-ca.crt:/certs/pf-runtime-tls-ca.crt:ro
+      - ../keys/gateway/pep-ssf.private.jwk.json:/keys/pep-ssf.private.jwk.json:ro
+    depends_on: [pingauthorize]
+
+  # The policy administration point: PingAuthorize Policy Editor 11.1 (the PDP's version). The rig's policy is authored
+  # here through its API (../gateway/pingauthorize/author-policy.py) and the PDP reads the committed branch live
+  # (external mode). The UI, for looking: https://localhost:8448 (demo-mode sign-in).
+  pingauthorize-pap:
+    image: pingidentity/pingauthorizepap:11.1.0.0-latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8448:1443"
+    environment:
+      PING_IDENTITY_ACCEPT_EULA: "YES"
+      PING_EXTERNAL_BASE_URL: localhost:8448
+      DECISION_POINT_SHARED_SECRET: rig-pap-dev-secret
+    env_file:
+      - path: ${PING_DEVOPS_CONFIG:-${HOME}/.pingidentity/config}
+
+  # The policy decision point: PingAuthorize 11.1, its embedded PDP behind the AuthZEN servlet. Not published on the
+  # host. Takes a few minutes to set up on first start (licence fetch, server profile).
+  pingauthorize:
+    build: ../gateway/pingauthorize
+    restart: unless-stopped
+    env_file:
+      - path: ${PING_DEVOPS_CONFIG:-${HOME}/.pingidentity/config}
+
+  # The control centre: the agent marketplace (../marketplace), the Agent registry. It registers agents in Raidiam -
+  # software statements, certificates, roles - deploys Principal versions, which Raidiam hosts, and drives the scenarios.
+  #   docker compose up -d --build marketplace      then http://localhost:3000
+  # Raidiam's admin API wants an operator's session until it allows directory:management for client credentials:
+  # "Sign in to Raidiam" there. The directory client's redirect URI is https://localhost:8443/cb, which the agents'
+  # gateway (Kong, 8443) passes through to here. Its keys: ../keys/raidiam/directory-client/ (signing.key - the
+  # rtssigning key for private_key_jwt; transport.crt/.key - mutual TLS; ca.pem - the directory's chain).
+  marketplace:
+    build: ../marketplace
+    restart: unless-stopped
+    ports:
+      - "${MARKETPLACE_PORT:-3000}:3000"
+    depends_on:
+      marketplace-mongo:
+        condition: service_healthy
+    environment:
+      MONGO_URL: mongodb://marketplace-mongo:27017
+      MONGO_DB: agent_marketplace
+      DIRECTORY_PARTICIPANTS_URL: ${DIRECTORY_URL:-https://data.directory.cba.raidiam.io}
+      RAIDIAM_MOCK: ${RAIDIAM_MOCK:-}
+      RAIDIAM_BASE_URL: ${RAIDIAM_BASE_URL:-https://matls-api.directory.cba.raidiam.io}
+      RAIDIAM_ISSUER: ${RAIDIAM_ISSUER:-https://auth.directory.cba.raidiam.io}
+      RAIDIAM_ORGANISATION_ID: ${RAIDIAM_ORGANISATION_ID:-CBA-123}
+      RAIDIAM_GRANT: ${RAIDIAM_GRANT:-authorization_code}
+      RAIDIAM_CLIENT_ID: ${RAIDIAM_DIRECTORY_CLIENT_ID:?RAIDIAM_DIRECTORY_CLIENT_ID is not set - see poc.env}
+      RAIDIAM_SIGNING_KID: ${RAIDIAM_DIRECTORY_SIGNING_KID:?RAIDIAM_DIRECTORY_SIGNING_KID is not set - see poc.env}
+      RAIDIAM_REDIRECT_URI: https://localhost:8443/cb
+      MARKETPLACE_URL: http://localhost:${MARKETPLACE_PORT:-3000}
+      # Principal versions: federation-managed statements Raidiam hosts, their bridge keys in the KMS (enrolment token).
+      RAIDIAM_MANAGED_ENTITY_BASE: ${RAIDIAM_MANAGED_ENTITY_BASE:-https://rp.directory.cba.raidiam.io/openid_relying_party}
+      OPENBAO_ADDR: http://openbao:8200
+      OPENBAO_TOKEN_FILE: /openbao/enrolment.token
+      AUTHORISATION_SERVER_ID: ${AUTHORISATION_SERVER_ID:?AUTHORISATION_SERVER_ID is not set - see poc.env}
+      SPIRE_SERVER_CONTAINER: ${POC_NAME:-agentic-poc}-spire-server
+      AGENT_IMAGE: ${POC_NAME:-agentic-poc}-agent:latest
+      RIG_NETWORK: ${POC_NAME:-agentic-poc}_default
+      SPIRE_SOCKETS_VOLUME: ${POC_NAME:-agentic-poc}-spire-agent-sockets
+      STATE_VOLUME_PREFIX: ${POC_NAME:-agentic-poc}-
+      PF_ISSUER: ${PF_BASE_URL:?PF_BASE_URL is not set - see poc.env}
+      PF_URL: https://host.docker.internal:${PF_PORT_HTTPS:-9031}
+      # Witnesses for the evidence packs: the gateway's PEP and PingFederate, read with docker logs.
+      COAZ_PEP_CONTAINER: ${POC_NAME:-agentic-poc}-coaz-pep-1
+      PF_CONTAINER: ${POC_NAME:-agentic-poc}-pingfederate
+      # A job run as a deployed version gets these, as the agent service does (AGENT_ENV_<NAME> -> <NAME>).
+      AGENT_ENV_PF_BASE_URL: ${PF_BASE_URL:?PF_BASE_URL is not set - see poc.env}
+      AGENT_ENV_AUTHORITY: ${AUTHORITY_HINT:?AUTHORITY_HINT is not set - see poc.env}
+      AGENT_ENV_TRUST_ANCHOR: ${TRUST_ANCHOR:?TRUST_ANCHOR is not set - see poc.env}
+      AGENT_ENV_TRUST_ANCHOR_ENV_FILE: /fed/vars.raidiam.env
+      AGENT_ENV_TRUST_ANCHOR_JWKS: '${TRUST_ANCHOR_JWKS:?TRUST_ANCHOR_JWKS is not set - see poc.env}'
+      AGENT_ENV_RESOURCE_IDS: ${RAIDIAM_RESOURCE_ID:-https://host.docker.internal:8446},${RAIDIAM_PAYMENTS_RESOURCE_ID:-https://host.docker.internal:8447},${RAIDIAM_PROVIDER_ID:-https://host.docker.internal:8443}/agent/accounts-agent,${RAIDIAM_PROVIDER_ID:-https://host.docker.internal:8443}/agent/payments-agent
+      AGENT_ENV_DIRECTORY_URL: ${DIRECTORY_URL:-https://data.directory.cba.raidiam.io}
+      AGENT_ENV_AUTHORISATION_SERVER_ID: ${AUTHORISATION_SERVER_ID:?AUTHORISATION_SERVER_ID is not set - see poc.env}
+      AGENT_ENV_ISSUER_HOST_OVERRIDE: host.docker.internal:${PF_PORT_HTTPS:-9031}
+      AGENT_ENV_SPIRE_SOCKET: /run/spire/sockets/agent.sock
+      AGENT_ENV_INSTANCE_KEY_FILE: /state/instance.jwk
+      AGENT_ENV_PF_CA_FILE: /certs/pf-runtime-tls-ca.crt
+      AGENT_ENV_INVOICE_AMOUNT: ${INVOICE_AMOUNT:-420}
+    volumes:
+      - ../keys/raidiam/directory-client:/directory-client:ro
+      - ../keys/openbao/enrolment:/openbao:ro
+      # The rig, driven from here: Docker (SPIRE entries, agent runs - a development shortcut, see
+      # ../raidiam/PROTECTED-ENVIRONMENTS.md), the files an agent run needs, and the SSF emitter's secret.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../keys/pf-runtime-tls-ca.crt:/rig/certs/pf-runtime-tls-ca.crt:ro
+      - ../vars.raidiam.env:/rig/fed/vars.raidiam.env:ro
+      - ../secrets.env:/rig/secrets.env:ro
+      # The harness's last report (python harness.py --report reports/latest.json), for the Objectives page.
+      - ./reports:/rig/reports:ro
+
+  marketplace-mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - marketplace-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # OpenBao (../openbao): the bridge keys in its transit engine, never exported - PingFederate signs each attested
+  # client's bridge assertion there (OIDF_BRIDGE_SIGNER_BACKING=vault, RAIDIAM_BRIDGE_BACKING=vault on up.sh) and the
+  # marketplace enrols new agents there (Principal versions need it: they have no key files). Optional: without it the rig keeps its
+  # bridge keys in a file, as before. Set up with python3 ../openbao/setup.py.
+  #   docker compose up -d openbao && python3 ../openbao/setup.py
+  openbao:
+    image: openbao/openbao:2.4.1
+    restart: unless-stopped
+    command: ["server", "-config=/openbao/config/config.hcl"]
+    ports:
+      - "8200:8200"
+    cap_add: [IPC_LOCK]
+    volumes:
+      - ../openbao/config.hcl:/openbao/config/config.hcl:ro
+      - openbao-data:/openbao/file
+
+volumes:
+  openbao-data:
+  marketplace-data:
+  agent-state:
+  accounts-agent-state:
+  payments-agent-state:
+  spire-sockets:
+    external: true
+    name: ${POC_NAME:-agentic-poc}-spire-agent-sockets

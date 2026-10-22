@@ -1,0 +1,95 @@
+'use strict';
+
+const path = require('path');
+const express = require('express');
+const config = require('./config');
+const db = require('./db');
+const api = require('./routes/api');
+const auth = require('./raidiam-auth');
+const evidence = require('./evidence');
+const objectives = require('./objectives');
+const report = require('./report');
+
+async function main() {
+  await db.connect();
+  await auth.restore();
+
+  const app = express();
+  app.use(express.json({ limit: '1mb' }));
+
+  app.get('/healthz', (req, res) => res.json({ ok: true }));
+
+  // Signing in to Raidiam (src/raidiam-auth.js). The redirect URI registered on the directory client is
+  // https://localhost:8443/cb: the agents' gateway (Kong) on 8443 passes /cb through to here.
+  app.get('/auth/login', async (req, res, next) => {
+    try {
+      res.redirect(await auth.startLogin());
+    } catch (err) {
+      next(err);
+    }
+  });
+  app.get('/cb', async (req, res) => {
+    try {
+      await auth.completeLogin(req.query);
+      res.redirect(`${config.raidiam.afterLogin}/?signedIn=1`);
+    } catch (err) {
+      console.error('[auth]', err.message);
+      res.redirect(`${config.raidiam.afterLogin}/?signInError=${encodeURIComponent(err.message.slice(0, 300))}`);
+    }
+  });
+
+  app.use('/api', api);
+
+  const pub = path.join(__dirname, '..', 'public');
+  app.use(express.static(pub));
+
+  // Pretty URLs for the four pages.
+  const page = (file) => (req, res) => res.sendFile(path.join(pub, file));
+  app.get('/', page('index.html'));
+  app.get('/new', page('new.html'));
+  app.get('/instances', page('instances.html'));
+  app.get('/agents/:softwareId', page('agent.html'));
+  app.get('/objectives', page('objectives.html'));
+
+  // Printable evidence (src/report.js): one run's pack, and the objectives report with every pack's hash.
+  app.get('/evidence/:id', async (req, res, next) => {
+    try {
+      const row = await evidence.get(req.params.id);
+      if (!row) return res.status(404).send('no such evidence pack');
+      res.type('html').send(report.renderPack(row, await evidence.verify(req.params.id)));
+    } catch (err) {
+      next(err);
+    }
+  });
+  app.get('/objectives/report', async (req, res, next) => {
+    try {
+      const data = { ...(await objectives.compute()), generatedAt: new Date().toISOString() };
+      res.type('html').send(report.renderObjectives(data, evidence.sha256(evidence.canonical(data))));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.use((err, req, res, next) => {
+    const status = err.status || 500;
+    if (status >= 500) console.error('[error]', err);
+    res.status(status).json({ error: err.message || 'internal error', steps: err.steps, body: err.body, signIn: err.signIn });
+  });
+
+  app.listen(config.port, () => {
+    console.log(`[server] agent marketplace on http://localhost:${config.port}`);
+    console.log(`[server] raidiam mode: ${config.raidiam.mock ? 'mock' : 'live'}`);
+  });
+}
+
+main().catch((err) => {
+  console.error('[fatal]', err);
+  process.exit(1);
+});
+
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, async () => {
+    await db.close().catch(() => {});
+    process.exit(0);
+  });
+}

@@ -1,0 +1,34 @@
+# Secrets — NEVER commit. A consumer stages these into the build context before `docker build`.
+# (Only the two key files are secret; overlay/config-store/ is plain ForceImport config and IS tracked.)
+overlay/pf.jwk
+overlay/pingfederate-system-keys.xml
+*.lic
+
+# Build outputs and consumer-supplied inputs — staged into the context, never versioned here.
+#   *.war, *.jar         <- this reactor's own output (modules/, via stage-modules.sh)
+#   data*.zip            <- a PF configArchive, supplied by whichever repo owns the deployment.
+#                           It is a PLAIN ZIP that CONTAINS pf.jwk (the master key), the system keys,
+#                           both keystores, the admin password hash and master-key-reversible client
+#                           secrets. It is a SECRET, never a versionable artifact — the earlier
+#                           "encrypted with pf.jwk so it is safe to commit" reading was wrong, and a
+#                           narrow `data.zip` pattern is exactly how data.staging.zip once got in.
+#                           The pattern stays here because the Dockerfile COPYs data.zip from this
+#                           directory, so this is where an operator will put one.
+*.war
+*.jar
+data*.zip
+modules/
+# The war assembler stage-modules.sh stages from build/war-assembler (war-assembler.jar); filters.xml,
+# which it reads, is tracked beside this file.
+assembler/
+# The release cache stage-from-release.sh fetches a version into (.release/<version>/), verified against its
+# SHA256SUMS before anything is staged from it.
+.release/
+
+# The PoC bundle carries the module release and the staged jars, so the image builds offline.
+!modules/
+!modules/*.jar
+!assembler/
+!assembler/*.jar
+!.release/
+!.release/**

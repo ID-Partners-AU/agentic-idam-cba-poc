@@ -1,0 +1,20 @@
+# The raidiam profile's additions to the running rig (PF_PROFILE=raidiam ./up.sh layers this on itself): the files
+# raidiam/render-runtime-keys.sh renders for the issuer, mounted read-only.
+#
+# No oidf.mock.attesters: the attester PingFederate's token endpoint trusts - its own - is trusted through its
+# federation chain to Raidiam's anchor (oauth_client_attester.jwks in its Entity Configuration).
+# OIDF_BRIDGE_SIGNING_KEYS is in vars.raidiam.env and names the bridge-keys mount.
+services:
+  pingfederate:
+    # The profile's environment is the one up.sh rendered (vars.env + vars.raidiam.env), whatever the base file's
+    # env_file says - a checkout that points it elsewhere would otherwise run without the profile.
+    env_file: !override
+      - path: .context/vars.env
+      - path: ${PING_DEVOPS_CONFIG:-${HOME}/.pingidentity/config}
+        required: false
+    volumes:
+      - ./keys/raidiam/runtime/bridge-signing-keys.json:/opt/pf-raidiam/bridge-signing-keys.json:ro
+      # The JDK's own cacerts, replaced by the image's CAs plus the rig's (raidiam/render-runtime-keys.sh): the modules'
+      # federation and remote-JWKS fetches use the JVM's default SSL context, which checks against this file -
+      # not PingFederate's trusted CAs, and not -Djavax.net.ssl.trustStore, which this PingFederate does not honour.
+      - ./keys/raidiam/runtime/truststore.p12:/opt/java/lib/security/cacerts:ro

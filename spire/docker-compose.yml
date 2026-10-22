@@ -1,0 +1,41 @@
+# SPIRE for the PoC: one server, one agent (x509pop node attestation, Docker workload attestation by container label),
+# trust domain example.org. ./setup.sh makes the CA and the agent's certificate, starts both, and registers the PoC's
+# workloads. The agent's Workload API socket is the named volume ${POC_NAME:-agentic-poc}-spire-agent-sockets, which
+# ../demo/spire-workload mounts.
+name: ${POC_NAME:-agentic-poc}-spire
+
+services:
+  spire-server:
+    image: ghcr.io/spiffe/spire-server:1.9.0
+    container_name: ${POC_NAME:-agentic-poc}-spire-server
+    hostname: spire-server
+    restart: unless-stopped
+    command: ["-config", "/run/spire/config/server.conf"]
+    ports:
+      - "${SPIRE_SERVER_PORT:-8081}:8081"
+    volumes:
+      - ./conf/server.conf:/run/spire/config/server.conf:ro
+      - ./certs/ca.crt:/run/spire/certs/ca.crt:ro
+      - spire-server-data:/run/spire/data
+
+  spire-agent:
+    image: ghcr.io/spiffe/spire-agent:1.9.0
+    container_name: ${POC_NAME:-agentic-poc}-spire-agent
+    depends_on: [spire-server]
+    # The agent dies if the server refuses it (e.g. a lapsed node identity); come back and re-attest.
+    restart: unless-stopped
+    pid: host
+    cgroup: host
+    command: ["-config", "/run/spire/config/agent.conf"]
+    volumes:
+      - ./conf/agent.conf:/run/spire/config/agent.conf:ro
+      - ./certs/bootstrap.crt:/run/spire/config/bootstrap.crt:ro
+      - ./certs/agent.key:/run/spire/certs/agent.key:ro
+      - ./certs/agent.crt:/run/spire/certs/agent.crt:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - spire-agent-sockets:/run/spire/sockets
+
+volumes:
+  spire-server-data:
+  spire-agent-sockets:
+    name: ${POC_NAME:-agentic-poc}-spire-agent-sockets

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  PingFederate 13.1.3's own file with one change: Rfc7523bisCompliantAudienceVerification is false.
+
+  A new 13.1 install accepts only its issuer as the audience of a client assertion (draft RFC 7523bis); an
+  archive upgraded from 13.0 goes on accepting the token endpoint URL as well, and that is what this rig's
+  results were first measured on. The suites' ordinary clients - the Shared Signals receiver, the OpenID
+  Federation OP plan's relying party at the token endpoint - address their assertions to the token endpoint,
+  as OpenID Connect Core 1.0 §9 says to. On an archive authored fresh on 13.1.3 the SSF plan failed 18 of 19
+  modules at the token endpoint ("Expected <issuer> as an aud value").
+
+  The FAPI 2.0 clients are still held to their issuer alone, by Fapi2ProfileFilter (OIDF_FAPI2_CLIENTS), and a
+  federation relying party's client assertion at PAR by the front-channel registration filter (OpenID
+  Federation 1.0 §12.1.1.2). Laid over the image and carried in the archive, like the cipher list - see that
+  file for why both.
+-->
+<c:config xmlns:c="http://www.sourceid.org/2004/05/config">
+  <c:item name="scope.whitelist">[a-zA-Z0-9!#$%&amp;'()*+,-./:;&lt;=>?@\[\]^_`{|}~]+</c:item>
+  <c:item name="MaximumSecondaryClientSecrets">5</c:item>
+  <c:item name="RevokeReplayedRefreshToken" defaultForUpgrade="false">true</c:item>
+  <c:item name="RevokeRefreshTokenForFailedIssuanceCriteria" defaultForUpgrade="true">false</c:item>
+  <!--
+    additional allowed audience values used for different JWT verification scenarios.
+
+    Note of caution: Be careful when adding values to this list as it may have security implications.
+  -->
+  <c:list name="AdditionalAllowedAudiences">
+        <!-- <c:ListItem>https://example.com</c:ListItem> -->
+  </c:list>
+  <c:item name="Rfc7523bisCompliantAudienceVerification" defaultForUpgrade="false">false</c:item>
+</c:config>
