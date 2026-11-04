@@ -1,5 +1,18 @@
 # Agentic IDAM PoC
 
+> **This branch (`oidf-federation`) runs with no Raidiam.** The Trust Controller is self-hosted: `demo/federation`, a
+> service on [go-openid-federation](https://github.com/MichaelFraser99/go-openid-federation). It serves the trust
+> anchor, the authority, the hosted Principal Entity Configurations, the keystore, the directory export and the admin
+> API the marketplace uses, all at `https://host.docker.internal:9443`.
+>
+> - There is no tunnel, no Raidiam account and no directory client.
+> - `./rig.sh init` writes a `poc.env` that works as it is.
+> - `./rig.sh up` starts the Trust Controller before PingFederate, pins its anchor and registers the rig's own entities.
+> - [`demo/federation/README.md`](demo/federation/README.md) says what changed.
+>
+> Elsewhere in this README, read "Raidiam" as the self-hosted Trust Controller; `raidiam-statements.env` and the
+> directory client are not used. `main` is the Raidiam version.
+
 A runnable proof of concept for *Agentic IDAM - Trust Controller PoC Objectives* (10 July 2026). Agents are
 governed through an agent marketplace, identified through OpenID Federation with Raidiam as the Trust Controller,
 attested on SPIRE's word, and given sender-constrained tokens by PingFederate. A gateway and a PDP enforce every
