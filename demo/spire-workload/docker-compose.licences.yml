@@ -1,0 +1,9 @@
+# Licence files instead of evaluation licences fetched at start-up (for a host whose TLS inspection breaks that fetch).
+# rig.sh layers this on when ../licences/PingAuthorize.lic exists. *.lic is git-ignored.
+services:
+  pingauthorize:
+    volumes:
+      - ../licences/PingAuthorize.lic:/opt/in/pd.profile/server-root/pre-setup/PingAuthorize.lic:ro
+  pingauthorize-pap:
+    volumes:
+      - ../licences/PingAuthorize.lic:/opt/in/pd.profile/server-root/pre-setup/PingAuthorize.lic:ro

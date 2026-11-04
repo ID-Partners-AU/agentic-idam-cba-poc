@@ -334,6 +334,7 @@ services:
         condition: service_healthy
     environment:
       MONGO_URL: mongodb://marketplace-mongo:27017
+      NODE_EXTRA_CA_CERTS: /rig/certs/pf-runtime-tls-ca.crt
       MONGO_DB: agent_marketplace
       DIRECTORY_PARTICIPANTS_URL: ${DIRECTORY_URL:-https://data.directory.cba.raidiam.io}
       RAIDIAM_MOCK: ${RAIDIAM_MOCK:-}
@@ -386,6 +387,31 @@ services:
       # The harness's last report (python harness.py --report reports/latest.json), for the Objectives page.
       - ./reports:/rig/reports:ro
 
+  # The Trust Controller, self-hosted (../federation): trust anchor, authority, the Entity Configurations of
+  # federation-managed agents, the keystore, the directory export and the slice of Raidiam's admin API the marketplace
+  # uses - in place of Raidiam Connect, on go-openid-federation. Its TLS certificate is from the rig's runtime CA, which
+  # PingFederate and every agent already trust. 9444 is the same API in plain HTTP, for rig.sh, on localhost only.
+  federation:
+    build: ../federation
+    restart: unless-stopped
+    ports:
+      - "${FED_PORT:-9443}:9443"
+      - "127.0.0.1:${FED_ADMIN_PORT:-9444}:9444"
+    environment:
+      FED_BASE_URL: ${FED_BASE_URL:-https://host.docker.internal:9443}
+      FED_ORG_ID: ${RAIDIAM_ORGANISATION_ID:-CBA-123}
+      FED_ORG_NAME: CBA-Payments
+      FED_AS_ID: ${AUTHORISATION_SERVER_ID:?AUTHORISATION_SERVER_ID is not set - see poc.env}
+      FED_AS_ISSUER: ${PF_BASE_URL:?PF_BASE_URL is not set - see poc.env}
+      FED_EXTRA_CA_FILES: /tls/ca.crt
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ../keys/federation/tls.crt:/tls/tls.crt:ro
+      - ../keys/federation/tls.key:/tls/tls.key:ro
+      - ../keys/pf-runtime-tls-ca.crt:/tls/ca.crt:ro
+      - federation-data:/data
+
   marketplace-mongo:
     image: mongo:7
     restart: unless-stopped
@@ -415,6 +441,7 @@ services:
       - openbao-data:/openbao/file
 
 volumes:
+  federation-data:
   openbao-data:
   marketplace-data:
   agent-state:

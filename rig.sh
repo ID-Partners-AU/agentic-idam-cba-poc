@@ -2,15 +2,17 @@
 # The Agentic IDAM PoC: one entry point.
 #
 #   ./rig.sh init          create poc.env from poc.env.example (then fill it in)
-#   ./rig.sh check         what the PoC needs: tools, poc.env, licences, the directory client's keys
-#   ./rig.sh up            everything, in order: SPIRE, keys, (OpenBao,) PingFederate, the PoC's services
+#   ./rig.sh check         what the PoC needs: tools, poc.env, licences
+#   ./rig.sh up            everything, in order: SPIRE, keys, the Trust Controller, (OpenBao,) PingFederate, the
+#                          PoC's services
+#   ./rig.sh federation    the self-hosted Trust Controller only (demo/federation, in place of Raidiam Connect): start
+#                          it, pin its anchor (.federation.env), register the rig's own entities (demo/federation/seed.py)
 #   ./rig.sh openbao       OpenBao only, with RAIDIAM_BRIDGE_BACKING=vault: start it, unseal, policies, import keys
 #   ./rig.sh spire         SPIRE only (spire/setup.sh)
 #   ./rig.sh keys          the PoC's keys and certificates only (idempotent: existing ones are kept)
 #   ./rig.sh pingfederate  PingFederate only: authored and configured the first time, restarted with the same
 #                          configuration after that (--author to author again)
 #   ./rig.sh services      the PoC's services only (build and start)
-#   ./rig.sh csrs          the CSRs to upload to Raidiam, for the statements listed in raidiam-statements.env
 #   ./rig.sh harness [..]  the end-to-end harness (spire-workload/harness.py); its report feeds the marketplace
 #   ./rig.sh status        what is running
 #   ./rig.sh down          stop everything (volumes and keys are kept)
@@ -30,14 +32,17 @@ load() {
   # shellcheck disable=SC1091
   . "$HERE/poc.env"
   set +a
+  # The anchor's keys, pinned from the self-hosted Trust Controller by ./rig.sh federation (a placeholder before then,
+  # so docker compose can read its files).
+  if [[ -f "$HERE/.federation.env" ]]; then . "$HERE/.federation.env"; else TRUST_ANCHOR_JWKS='{"keys":[]}'; fi
+  export TRUST_ANCHOR_JWKS
   export PF_RIG_NAME="${PF_RIG_NAME:-$POC_NAME-pingfederate}" PF_PROFILE=raidiam
   export SPIRE_BUNDLE_FILE="$HERE/spire/certs/bundle.spiffe.json"
 }
 
 require() {
   local missing=()
-  for v in PF_BASE_URL TRUST_ANCHOR_JWKS AUTHORISATION_SERVER_ID AUTHORITY_HINT TRUST_ANCHOR \
-           RAIDIAM_DIRECTORY_CLIENT_ID RAIDIAM_DIRECTORY_SIGNING_KID; do
+  for v in PF_BASE_URL AUTHORISATION_SERVER_ID AUTHORITY_HINT TRUST_ANCHOR; do
     [[ -n "${!v:-}" ]] || missing+=("$v")
   done
   ((${#missing[@]} == 0)) || die "poc.env: set ${missing[*]}"
@@ -55,12 +60,7 @@ check() {
   # always fetch theirs with the DevOps credentials.
   [[ -z "${PF_LICENSE_FILE:-}" || -f "$PF_LICENSE_FILE" ]] || { echo "PF_LICENSE_FILE=$PF_LICENSE_FILE is not a file"; bad=1; }
   [[ -f "${PING_DEVOPS_CONFIG/#\~/$HOME}" ]] || { echo "no Ping DevOps credentials at $PING_DEVOPS_CONFIG (PingAuthorize needs them${PF_LICENSE_FILE:+; PingFederate uses PF_LICENSE_FILE})"; bad=1; }
-  for f in signing.key transport.crt transport.key ca.pem; do
-    [[ -f "$DEMO/keys/raidiam/directory-client/$f" ]] || { echo "missing demo/keys/raidiam/directory-client/$f"; bad=1; }
-  done
-  python3 -c 'import json,os,sys; json.loads(os.environ["TRUST_ANCHOR_JWKS"])["keys"]' 2>/dev/null \
-    || { echo "TRUST_ANCHOR_JWKS is not a JWK Set"; bad=1; }
-  curl -sk --max-time 10 -o /dev/null "$PF_BASE_URL" || echo "note: $PF_BASE_URL does not answer yet (fine before PingFederate is up; Raidiam needs it reachable)"
+  [[ -f "$HERE/.federation.env" ]] || echo "note: no .federation.env yet - ./rig.sh federation (or up) pins the anchor"
   ((bad == 0)) && echo "ready" || die "fix the above first"
 }
 
@@ -82,8 +82,23 @@ keys() {
   for agent in $RAIDIAM_HOSTED_AGENTS; do AGENT="$agent" "$DEMO/raidiam/attested-client.sh" keys; done
   for rs in rs-accounts rs-payments; do RESOURCE="$rs" "$DEMO/raidiam/resource.sh" keys; done
   "$DEMO/gateway/gen-keys.sh"
+  local ca="$DEMO/keys/pf-runtime-tls-ca"
+  # The self-hosted Trust Controller's TLS certificate, from the rig's CA, which PingFederate and every agent trust.
+  local f="$DEMO/keys/federation"
+  if [[ ! -f "$f/tls.crt" ]]; then
+    mkdir -p "$f"
+    ( cd "$f" && umask 077
+      export MSYS2_ARG_CONV_EXCL="/CN="
+      openssl req -new -newkey rsa:2048 -nodes -keyout tls.key -subj "/CN=host.docker.internal" -out tls.csr 2>/dev/null
+      printf 'subjectAltName=DNS:host.docker.internal,DNS:localhost,DNS:federation\nextendedKeyUsage=serverAuth\n' > tls.ext
+      openssl x509 -req -in tls.csr -CA "$ca.crt" -CAkey "$ca.key" -CAcreateserial -days 397 -extfile tls.ext -out tls.crt 2>/dev/null
+      rm -f tls.csr tls.ext; chmod 644 tls.crt tls.key )
+    echo "generated keys/federation/tls.* (from the rig's runtime CA)"
+  fi
+  # Mounted by the marketplace; the self-hosted API wants no directory client keys, so it stays empty.
+  mkdir -p "$DEMO/keys/raidiam/directory-client"
   # SPIRE's OIDC Discovery Provider: a certificate from the rig's CA, which PingFederate and the agents trust.
-  local d="$DEMO/keys/raidiam/spire-oidc" ca="$DEMO/keys/pf-runtime-tls-ca"
+  local d="$DEMO/keys/raidiam/spire-oidc"
   if [[ ! -f "$d/tls.crt" ]]; then
     mkdir -p "$d"
     ( cd "$d" && umask 077
@@ -93,6 +108,32 @@ keys() {
       openssl x509 -req -in tls.csr -CA "$ca.crt" -CAkey "$ca.key" -CAcreateserial -days 397 -extfile tls.ext -out tls.crt 2>/dev/null
       rm -f tls.csr tls.ext; chmod 644 tls.crt tls.key )
     echo "generated keys/raidiam/spire-oidc/tls.* (from the rig's runtime CA)"
+  fi
+}
+
+federation() {
+  say "Trust Controller (self-hosted, demo/federation)"
+  ( cd "$DEMO/spire-workload" && docker compose up -d --build federation )
+  local api="http://localhost:${FED_ADMIN_PORT:-9444}/api" state=""
+  for _ in $(seq 1 60); do state="$(curl -sf "$api/_state" 2>/dev/null)" && break; sleep 2; done
+  [[ -n "$state" ]] || die "the Trust Controller did not answer on $api"
+  # The anchor's keys, pinned: what PingFederate and every agent trust a chain to end at.
+  TRUST_ANCHOR_JWKS="$(printf '%s' "$state" | python3 -c 'import json,sys;print(json.dumps(json.load(sys.stdin)["trust_anchor_jwks"],separators=(",",":")))')"
+  printf "# Written by ./rig.sh federation: the self-hosted anchor's keys, pinned. Not a secret.\nTRUST_ANCHOR_JWKS='%s'\n" \
+    "$TRUST_ANCHOR_JWKS" > "$HERE/.federation.env"
+  export TRUST_ANCHOR_JWKS
+  echo "anchor    $TRUST_ANCHOR (keys pinned in .federation.env)"
+  echo "authority $AUTHORITY_HINT"
+  FED_API="$api" python3 "$DEMO/federation/seed.py"
+  # PingFederate's static signing key, certified by the directory at organisation level (server_signing), as Raidiam
+  # certified it: terraform/signing-keys.tf authors it, and PingFederate signs its Entity Configuration with it.
+  local ps="$DEMO/keys/raidiam/pf-signing"
+  if [[ ! -f "$ps/signing.p12" ]]; then
+    "$DEMO/raidiam/pf-signing.sh" csr >/dev/null
+    curl -sf -X POST -H 'content-type: application/x-pem-file' --data-binary @"$ps/signing.csr" \
+      "$api/organisations/${RAIDIAM_ORGANISATION_ID:-CBA-123}/certificates/server_signing" \
+      | python3 -c 'import json,sys;sys.stdout.write(json.load(sys.stdin)["PemCertificate"])' > "$ps/directory.crt.pem"
+    "$DEMO/raidiam/pf-signing.sh" import "$ps/directory.crt.pem"
   fi
 }
 
@@ -120,23 +161,12 @@ services() {
   say "services"
   [[ "${RAIDIAM_BRIDGE_BACKING:-vault}" != vault ]] || SERVICES=(openbao "${SERVICES[@]}")
   ( cd "$DEMO/spire-workload"
+    # PingAuthorize from a licence file, when there is one (demo/licences/, git-ignored), rather than a fetched one.
+    [[ ! -f "$DEMO/licences/PingAuthorize.lic" ]] || export COMPOSE_FILE="docker-compose.yml:docker-compose.licences.yml"
     docker compose build agent
     docker compose up -d --build "${SERVICES[@]}" )
   # No agent provider: PingFederate registers each agent from its trust chain at its first attested token request.
-  echo "marketplace: http://localhost:${MARKETPLACE_PORT:-3000}  (sign in to Raidiam there)"
-}
-
-csrs() {
-  load
-  local f="$HERE/raidiam-statements.env"
-  [[ -f "$f" ]] || die "no raidiam-statements.env: copy raidiam-statements.env.example and fill in the statement ids"
-  # shellcheck disable=SC1090
-  . "$f"
-  [[ -z "${ACCOUNTS_AGENT_SSID:-}" ]] || AGENT=accounts-agent "$DEMO/raidiam/attested-client.sh" csr "$ACCOUNTS_AGENT_SSID" "/C=GB/O=CBA Trust Framework/OU=$RAIDIAM_ORGANISATION_ID"
-  [[ -z "${PAYMENTS_AGENT_SSID:-}" ]] || AGENT=payments-agent "$DEMO/raidiam/attested-client.sh" csr "$PAYMENTS_AGENT_SSID" "/C=GB/O=CBA Trust Framework/OU=$RAIDIAM_ORGANISATION_ID"
-  [[ -z "${RS_ACCOUNTS_SSID:-}" ]] || RESOURCE=rs-accounts "$DEMO/raidiam/resource.sh" csr "$RS_ACCOUNTS_SSID" "/C=GB/O=CBA Trust Framework/OU=$RAIDIAM_ORGANISATION_ID"
-  [[ -z "${RS_PAYMENTS_SSID:-}" ]] || RESOURCE=rs-payments "$DEMO/raidiam/resource.sh" csr "$RS_PAYMENTS_SSID" "/C=GB/O=CBA Trust Framework/OU=$RAIDIAM_ORGANISATION_ID"
-  echo "upload each as an rtssigning certificate on its statement (Raidiam website, or POST .../certificates/rtssigning with Accept: */*)"
+  echo "marketplace: http://localhost:${MARKETPLACE_PORT:-3000}  (Trust Controller: $TRUST_ANCHOR)"
 }
 
 case "${1:-}" in
@@ -144,13 +174,13 @@ case "${1:-}" in
     [[ -f "$HERE/poc.env" ]] && die "poc.env exists"
     cp "$HERE/poc.env.example" "$HERE/poc.env"; echo "wrote poc.env - fill in the REQUIRED values" ;;
   check) check ;;
-  up) load; require; spire; keys; openbao; pingfederate; services ;;
+  up) load; require; spire; keys; federation; openbao; pingfederate; services ;;
+  federation) load; require; federation ;;
   openbao) load; openbao ;;
   spire) load; spire ;;
   keys) load; keys ;;
   pingfederate) load; require; pingfederate "${2:-}" ;;
   services) load; require; services ;;
-  csrs) csrs ;;
   harness) load; shift; cd "$DEMO/spire-workload" && exec python3 harness.py "$@" ;;
   status) load; docker ps --filter "name=$POC_NAME" --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' ;;
   down)
@@ -158,5 +188,5 @@ case "${1:-}" in
     ( cd "$DEMO/spire-workload" && docker compose down )
     ( cd "$DEMO" && COMPOSE_FILE="docker-compose.yml:docker-compose.raidiam.yml" COMPOSE_PROJECT_NAME="$PF_RIG_NAME" docker compose down )
     ( cd "$HERE/spire" && docker compose down ) ;;
-  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

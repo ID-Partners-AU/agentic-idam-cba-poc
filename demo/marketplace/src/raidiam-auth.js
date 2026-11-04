@@ -227,6 +227,8 @@ async function clientCredentials() {
 
 /** The current access token, refreshed or fetched as the grant allows; else "sign in" (401). */
 async function accessToken() {
+  // The self-hosted Trust Controller (../federation) takes no token: a PoC on one machine, its API on the rig's network.
+  if (config.raidiam.grant === 'none') return 'self-hosted';
   if (tokens && tokens.expiresAt > Date.now() + 30000) return tokens.accessToken;
   if (config.raidiam.grant === 'client_credentials') {
     await clientCredentials();
@@ -240,11 +242,11 @@ async function accessToken() {
 function status() {
   return {
     grant: config.raidiam.grant,
-    signedIn: Boolean(tokens && tokens.expiresAt > Date.now()),
+    signedIn: config.raidiam.grant === 'none' || Boolean(tokens && tokens.expiresAt > Date.now()),
     refreshable: Boolean(tokens?.refreshToken),
     expiresAt: tokens ? new Date(tokens.expiresAt).toISOString() : null,
     scope: tokens?.scope || (config.raidiam.grant === 'client_credentials' ? config.raidiam.scope : config.raidiam.loginScope),
-    who: tokens?.idClaims ? tokens.idClaims.email || tokens.idClaims.name || tokens.idClaims.sub : null,
+    who: config.raidiam.grant === 'none' ? 'self-hosted Trust Controller' : tokens?.idClaims ? tokens.idClaims.email || tokens.idClaims.name || tokens.idClaims.sub : null,
     clientId: config.raidiam.clientId,
     redirectUri: config.raidiam.redirectUri,
   };

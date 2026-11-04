@@ -83,14 +83,24 @@ def claims(jwt: str) -> dict:
     return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
 
 
-def raidiam_fetch(sub: str):
-    with urllib.request.urlopen(f"{AUTHORITY}/fetch?sub={quote(sub, safe='')}", timeout=20) as r:
-        return claims(r.read().decode())
+# The federation's reads are made from inside the rig's network (in_network), not from the host. Every entity is at
+# host.docker.internal now - the self-hosted Trust Controller, PingFederate - under the rig's CA: the host resolves that
+# name through its hosts file (whose entry can be stale), and its TLS interception (Avast) re-signs a certificate it
+# does not trust with a root nobody trusts. Inside, both are as the agents see them.
+_FETCH = ("import os,ssl,sys,urllib.request;c=ssl.create_default_context(cafile=os.environ['PF_CA_FILE']);"
+          "c.load_default_certs();r=urllib.request.Request(sys.argv[1],headers={'Accept':sys.argv[2]});"
+          "sys.stdout.write(urllib.request.urlopen(r,timeout=20,context=c).read().decode())")
 
 
 def get(url: str, accept: str = "*/*") -> str:
-    with urllib.request.urlopen(urllib.request.Request(url, headers={"Accept": accept}), timeout=20) as r:
-        return r.read().decode()
+    out = compose("exec", "-T", "accounts-agent", "python", "-c", _FETCH, url, accept, timeout=120)
+    if out.returncode:
+        raise RuntimeError(out.stderr.strip().splitlines()[-1] if out.stderr.strip() else f"exit {out.returncode}")
+    return out.stdout
+
+
+def raidiam_fetch(sub: str):
+    return claims(get(f"{AUTHORITY}/fetch?sub={quote(sub, safe='')}").strip())
 
 
 def deployed_principal(marketplace: str) -> dict:
@@ -98,7 +108,8 @@ def deployed_principal(marketplace: str) -> dict:
     with urllib.request.urlopen(f"{marketplace}/api/agents?status=approved", timeout=20) as r:
         agents = json.load(r)["agents"]
     ready = [x for x in agents if x.get("kind") == "principal" and (x.get("deploy") or {}).get("hosted")
-             and str((x.get("deploy") or {}).get("entityId", "")).startswith("https://rp.")]
+             and str((x.get("deploy") or {}).get("entityId", "")).startswith(
+                 os.environ.get("RAIDIAM_MANAGED_ENTITY_BASE", "https://rp."))]
     ready.sort(key=lambda x: x.get("updatedAt") or "", reverse=True)
     if not ready:
         raise SystemExit("harness: no Principal version Raidiam hosts is deployed - deploy one in the marketplace, "
@@ -207,7 +218,7 @@ def preflight(rep: Report, a) -> bool:
 
     try:
         out = in_network(
-            "import requests,os;r=requests.get('https://host.docker.internal:9031/.well-known/openid-configuration',"
+            "import federation,requests,os;r=requests.get('https://host.docker.internal:9031/.well-known/openid-configuration',"
             "verify=os.environ['PF_CA_FILE']);print(r.status_code, r.json().get('issuer'))")
         rep.expect("preflight", "PingFederate answers", out.startswith("200"), out)
     except Exception as e:
@@ -220,7 +231,7 @@ def preflight(rep: Report, a) -> bool:
     try:
         url = a.issuer.rstrip("/") + "/.well-known/openid-federation"
         ec = claims(in_network(
-            f"import requests;r=requests.get({json.dumps(url)},headers={{'Accept':'application/entity-statement+jwt'}},"
+            f"import federation,requests;r=requests.get({json.dumps(url)},headers={{'Accept':'application/entity-statement+jwt'}},"
             "timeout=20);r.raise_for_status();print(r.text.strip())"))
         reachable = ec.get("iss") == a.issuer.rstrip("/")
         rep.expect("preflight", "PingFederate's public issuer serves its Entity Configuration", reachable,
@@ -255,7 +266,7 @@ def preflight(rep: Report, a) -> bool:
         sub_agent = f"{a.origin}/agent/{name}"
         try:
             out = in_network(
-                "import requests,os,base64,json;t=requests.get('" + sub_agent + "/.well-known/openid-federation',"
+                "import federation,requests,os,base64,json;t=requests.get('" + sub_agent + "/.well-known/openid-federation',"
                 "verify=os.environ['PF_CA_FILE']).text;p=t.split('.')[1];p+='='*(-len(p)%4);"
                 "print(json.loads(base64.urlsafe_b64decode(p))['iss'])")
             rep.expect("preflight", f"the {name} serves its own Entity Configuration", out == sub_agent, out)
@@ -332,7 +343,7 @@ def attesters(rep: Report, a, result: dict):
     att = (result or {}).get("steps", {}).get("attest", {})
     try:
         out = in_network(
-            "import requests,os,base64,json;t=requests.get('https://host.docker.internal:9031/.well-known/openid-federation',"
+            "import federation,requests,os,base64,json;t=requests.get('https://host.docker.internal:9031/.well-known/openid-federation',"
             "verify=os.environ['PF_CA_FILE']).text;p=t.split('.')[1];p+='='*(-len(p)%4);c=json.loads(base64.urlsafe_b64decode(p));"
             "print(json.dumps([k.get('kid') for k in c.get('metadata',{}).get('oauth_client_attester',{}).get('jwks',{}).get('keys',[])]))")
         kids = json.loads(out)
@@ -360,7 +371,7 @@ def attesters(rep: Report, a, result: dict):
         rep.expect("attesters", "Raidiam binds the agent's SPIFFE ID for PingFederate's attester", False, str(e))
     try:
         out = in_network(
-            "import requests,os,json;d=requests.get('https://host.docker.internal:9031/.well-known/client-attester',"
+            "import federation,requests,os,json;d=requests.get('https://host.docker.internal:9031/.well-known/client-attester',"
             "verify=os.environ['PF_CA_FILE']).json();print(json.dumps(d.get('resolver_plugins_active')))")
         active = json.loads(out) or []
         rep.expect("attesters", "PingFederate's attester reads the bindings from Raidiam (openid-federation-authority)",
@@ -397,7 +408,7 @@ def negatives(rep: Report, a):
                r.get("outcome") == "refused" and r.get("refused_at") == "envelope", (r.get("reason") or "")[:110])
 
     try:
-        out = in_network("import requests,os;print(requests.post('" + a.resource + "/mcp/v1',json={},"
+        out = in_network("import federation,requests,os;print(requests.post('" + a.resource + "/mcp/v1',json={},"
                          "verify=os.environ['PF_CA_FILE']).status_code)")  # the gateway answers now
         rep.expect("negatives", "the resource refuses a call with no token", out == "401", out)
     except Exception as e:

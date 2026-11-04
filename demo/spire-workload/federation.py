@@ -26,6 +26,23 @@ from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.x509.oid import NameOID
 from jwt.algorithms import ECAlgorithm, RSAAlgorithm
 
+
+def _trust_the_network():
+    """The Trust Controller is self-hosted now (../federation), with a certificate from the rig's CA: every federation
+    read - the directory, the authority, entities' configurations - trusts the public roots and that CA, by default
+    (requests reads REQUESTS_CA_BUNDLE wherever a call leaves verify at True)."""
+    ca = os.environ.get("PF_CA_FILE")
+    if not ca or os.environ.get("REQUESTS_CA_BUNDLE") or not os.path.exists(ca):
+        return
+    import certifi
+    path = "/tmp/federation-ca.pem"
+    with open(path, "w") as out, open(certifi.where()) as public, open(ca) as private:
+        out.write(public.read() + "\n" + private.read())
+    os.environ["REQUESTS_CA_BUNDLE"] = path
+
+
+_trust_the_network()
+
 ENTITY_STATEMENT_TYP = "entity-statement+jwt"
 JWT_BEARER = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
 
